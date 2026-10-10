@@ -175,6 +175,45 @@ test('load and card requests use custom routes, deduplicate, and carry no auth',
   }
 });
 
+test('PD load keeps one total curve per metric in history and the targeted replay', async () => {
+  const originalFetch=globalThis.fetch, originalWindow=globalThis.window;
+  (globalThis as any).window={setTimeout:globalThis.setTimeout};
+  const urls:URL[]=[];
+  globalThis.fetch=async input=>{
+    const url=new URL(String(input),'http://localhost');urls.push(url);
+    assert.equal(url.pathname,'/api/prometheus/query_range');
+    const query=url.searchParams.get('query')!;
+    const replay=url.searchParams.get('start')==='500';
+    const model=replay?'DeepSeek-load-v2':'DeepSeek-load-v1';
+    const filter=replay?`{deployment="optimized-pd",model_name="${model}"}`:`{model_name="${model}"}`;
+    const metric=query.includes('num_requests_running')?'running':'waiting';
+    assert.equal(query,`sum by (model_name) (vllm:num_requests_${metric}${filter})`);
+    // 模拟 Prometheus 已求和的结果：running = proxy 10 + prefill 3 + decode 7，waiting = 4 + 1 + 2。
+    // 前端接收该总值，不能再平均或按 role 拆行。
+    const start=Number(url.searchParams.get('start'));
+    const values=metric==='running'?[[start,'20'],[start+5,'22']]:[[start,'7'],[start+5,'0']];
+    return new Response(JSON.stringify({status:'success',data:{resultType:'matrix',result:[{metric:{model_name:model},values}]}}));
+  };
+  try {
+    const history=await fetchLoad('DeepSeek-load-v1',{start:100,end:400});
+    const replay=await fetchLoad('DeepSeek-load-v1',{start:500,end:800},{deployment:'optimized-pd',model_name:'DeepSeek-load-v2'});
+    for(const [data,model] of [[history,'DeepSeek-load-v1'],[replay,'DeepSeek-load-v2']] as const) {
+      assert.deepEqual(data.errors,[]);
+      assert.equal(data.running.length,1);
+      assert.equal(data.waiting.length,1);
+      assert.equal(data.running[0].name,model);
+      assert.equal(data.waiting[0].name,model);
+      assert.deepEqual(data.running[0].points.map(point=>point.value),[20,22]);
+      assert.deepEqual(data.waiting[0].points.map(point=>point.value),[7,0]);
+    }
+    assert.equal(urls.length,4,'two history queries and two deployment-filtered replay queries');
+  }finally{
+    globalThis.fetch=originalFetch;
+    if(originalWindow===undefined)delete(globalThis as any).window;
+    else globalThis.window=originalWindow;
+  }
+});
+
 test('404 errors identify the failed route without exposing the query string', async () => {
   const originalFetch = globalThis.fetch;
   const originalWindow = globalThis.window;

@@ -53,7 +53,7 @@ function promResult(raw: unknown, type: string): PromSeries[] {
 /**
  * query_range 的 matrix → Series[]，传给处理/等待折线。
  * vLLM 按 model_name 分组；接入 LiteLLM 指标时可传 requested_model。
- * role 保留为独立曲线；同组 engine 应已在 PromQL 中聚合，不在此二次聚合。
+ * 若查询返回 role 则保留为独立曲线；负载查询已汇总所有 role/engine，不在此二次聚合。
  */
 export function parseMatrix(raw: unknown, label = 'model_name'): Series[] {
   const groups = new Set<string>();
@@ -111,12 +111,14 @@ export function selector(modelName: string, labels: Labels = {}): string {
     return `${key}=${promString(value)}`;
   }).join(',') + '}';
 }
-// running/waiting 是瞬时 gauge。跨 engine 求和，保留 PD 的 prefill/decode 角色。
+// running/waiting 是瞬时 gauge。按所选模型对全部 role/engine 求和，表示集群各阶段负载总和。
+// 历史和回放共用此口径；部署等标签只用于筛选目标，不保留为额外曲线。
+// proxy 若与 worker 同时记录同一请求，此总和不等于去重后的用户请求数。
 export function loadQueries(modelName: string, labels?: Labels) {
   const filter = selector(modelName, labels);
   return {
-    running: `sum by (model_name, role) (vllm:num_requests_running${filter})`,
-    waiting: `sum by (model_name, role) (vllm:num_requests_waiting${filter})`
+    running: `sum by (model_name) (vllm:num_requests_running${filter})`,
+    waiting: `sum by (model_name) (vllm:num_requests_waiting${filter})`
   };
 }
 /** PromQL duration：避免 0h0m 这类 Prometheus 不接受的写法。 */

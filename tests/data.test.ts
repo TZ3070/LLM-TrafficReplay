@@ -19,11 +19,15 @@ test('matrix keeps PD roles and genuine NaN samples', () => {
   assert(Number.isNaN(series[0].points[0].value));
   assert.equal(series[0].points[1].value,2);
 });
-test('PromQL uses source model filter and keeps deployment label', () => {
-  const query=loadQueries('model-a',{deployment:'optimized-a'}).running;
-  assert(query.includes('model_name="model-a"'));
-  assert(query.includes('deployment="optimized-a"'));
-  assert(query.includes('sum by (model_name, role)'));
+test('load PromQL sums all roles and engines while preserving target filters', () => {
+  assert.deepEqual(loadQueries('DeepSeek-V3'), {
+    running: 'sum by (model_name) (vllm:num_requests_running{model_name="DeepSeek-V3"})',
+    waiting: 'sum by (model_name) (vllm:num_requests_waiting{model_name="DeepSeek-V3"})'
+  });
+  const queries=loadQueries('model-a',{deployment:'optimized-a',model_name:'model-a-v2'});
+  for(const [key,query] of Object.entries(queries)) {
+    assert.equal(query, `sum by (model_name) (vllm:num_requests_${key}{deployment="optimized-a",model_name="model-a-v2"})`);
+  }
 });
 test('uses a minimum 5 second step and at least 30 second rate window', () => {
   const result = queryTiming(120, 1000);
