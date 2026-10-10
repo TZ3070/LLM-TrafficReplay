@@ -1,13 +1,13 @@
-import type { LoadData, Metrics, Model, Point, Series, TimeRange } from './types';
-import { DEFAULT_API_CONFIG, type ApiConfig } from './apiConfig';
+import type { LatencyMetricKey, LoadData, Metric, MetricKey, Metrics, Model, Point, Series, TimeRange } from './types';
+import { DEFAULT_API_CONFIG, type ApiConfig, type MetricNameConfig } from './apiConfig';
 
 /**
  * 数据入口与适配层。
  * 真实指标：vLLM /metrics → Prometheus → 看板后端 /api/prometheus/*
  *          → 本文件解析 vector/matrix → App 状态 → 指标卡 / LoadChart。
- * 模型列表：LiteLLM /model/info → 看板后端透传 → adaptModels → 模型下拉框。
+ * 模型列表：vLLM /metrics → Prometheus model_name 标签 → fetchModels → 模型下拉框。
  * 演示数据：demoModels / demoLoad 在浏览器生成，不读取后端或发送推理请求。
- * 后端返回原样 Prometheus JSON；聚合口径由这里生成的 PromQL 决定。
+ * 后端返回原样 Prometheus JSON；历史 gauge 在 PromQL 聚合，延迟的 engine 均值在解析时合并。
  */
 type Labels = Record<string, string>;
 // Prometheus 的数值字段是字符串；时间戳为 Unix 秒，不是 JavaScript 毫秒。
@@ -32,8 +32,7 @@ export function formatValue(value?: number, decimals = 2): string {
   return value.toLocaleString('zh-CN', { maximumFractionDigits: decimals });
 }
 /**
- * 区间秒数 → 约 60 个点的查询步长，最小 5s；rate 窗口统一输出秒单位。
- * fetchLoad 使用 step 查询 gauge，不套 rate；当前卡片另用固定的 [1m] 窗口。
+ * 区间秒数 → 约 60 个点的查询步长，最小 5s；即时卡片的 rate 窗口单独按用户选择的历史范围生成。
  */
 export function queryTiming(seconds: number, now = Math.floor(Date.now() / 1000)) {
   const step = Math.max(5, Math.ceil(seconds / 60));
@@ -74,6 +73,30 @@ export function parseVector(raw: unknown): number | undefined {
   if (result.length > 1) throw new Error('卡片查询应在 PromQL 中聚合为单个结果');
   return result[0]?.value ? parsePromValue(result[0].value[1]) : undefined;
 }
+/**
+ * 未聚合的延迟比值（包括 TPOT 的特殊分母）返回各 engine 的延迟均值。
+ * 同模型、同 role 的 engine 求算术平均（不是按请求数加权）；PD 角色保留为独立行。
+ * 已由 PromQL 聚合的单条结果直接取值。NaN/Inf 参与运算，不能丢掉或替换成 0。
+ */
+export function parseLatencyVector(raw: unknown, modelName: string): Metric {
+  const groups = new Map<string, (number | undefined)[]>();
+  for (const series of promResult(raw, 'vector')) {
+    if (series.metric.model_name && series.metric.model_name !== modelName) {
+      throw new Error('延迟响应包含其他模型，请检查 PromQL 模型筛选');
+    }
+    const role = series.metric.role || '';
+    const values = groups.get(role) ?? [];
+    values.push(series.value ? parsePromValue(series.value[1]) : undefined);
+    groups.set(role, values);
+  }
+  const rows = [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([role, values]) => {
+    const present = values.filter((value): value is number => value !== undefined);
+    const value = present.length ? present.reduce((total, next) => total + next, 0) / present.length : undefined;
+    return { name: modelName + (role ? ` · ${role}` : ''), role: role || undefined, value };
+  });
+  if (rows.some(row => row.role)) return { rows };
+  return { value: rows[0]?.value };
+}
 // 单引号和尖括号转义；PromQL 标签匹配所需的双引号保留。
 export function promString(value: string): string {
   return JSON.stringify(value).replace(/'/g, '\\x27').replace(/</g, '\\x3c').replace(/>/g, '\\x3e');
@@ -94,17 +117,57 @@ export function loadQueries(modelName: string, labels?: Labels) {
     waiting: `sum by (model_name, role) (vllm:num_requests_waiting${filter})`
   };
 }
-export function metricQueries(modelName: string) {
+/** PromQL duration：避免 0h0m 这类 Prometheus 不接受的写法。 */
+export function promDuration(seconds: number): string {
+  if(!Number.isFinite(seconds)||seconds<=0)throw new Error('rate 回溯范围必须是正数秒');
+  const value = Math.max(1, Math.round(seconds));
+  if (value % 86400 === 0) return `${value / 86400}d`;
+  if (value % 3600 === 0) return `${value / 3600}h`;
+  if (value % 60 === 0) return `${value / 60}m`;
+  return `${value}s`;
+}
+
+const defaultMetricNames: Record<LatencyMetricKey, MetricNameConfig> = {
+  ttft: { sum: 'vllm:time_to_first_token_seconds_sum', count: 'vllm:time_to_first_token_seconds_count' },
+  e2e: { sum: 'vllm:e2e_request_latency_seconds_sum', count: 'vllm:e2e_request_latency_seconds_count' },
+  itl: { sum: 'vllm:inter_token_latency_seconds_sum', count: 'vllm:inter_token_latency_seconds_count' },
+  // 用户确认的 TPOT：解码总耗时 ÷（生成 token 总数 - 请求数），扣除每个请求的首 token。
+  tpot: { decodeSum: 'vllm:request_decode_time_seconds_sum', generationTokensSum: 'vllm:request_generation_tokens_sum', generationTokensCount: 'vllm:request_generation_tokens_count' },
+  qt: { sum: 'vllm:request_queue_time_seconds_sum', count: 'vllm:request_queue_time_seconds_count' }
+};
+
+/**
+ * 五张首页卡片各发一条即时 query。后端按 TTL 缓存后透传 Prometheus 的原样响应。
+ * rate 窗口就是历史查询范围（例如 30m、24h、7d），不是固定 1m。
+ */
+export function metricQueries(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG) {
   const f = selector(modelName);
-  return {
-    // 每个分片先算 sum/count 的窗口均值，再 avg；这不是按请求数加权的全局均值。
-    ttft: `avg(rate(vllm:time_to_first_token_seconds_sum${f}[1m]) / rate(vllm:time_to_first_token_seconds_count${f}[1m]))`,
-    e2e: `avg(rate(vllm:e2e_request_latency_seconds_sum${f}[1m]) / rate(vllm:e2e_request_latency_seconds_count${f}[1m]))`,
-    // 计数器先 rate 再 sum，结果单位 tokens/s。
-    throughput: `sum(rate(vllm:generation_tokens_total${f}[1m]))`,
-    // 分子分母分别聚合后相除；保留 0/0 的 NaN。指标名需与部署的 vLLM 版本核对。
-    cache: `sum(rate(vllm:prefix_cache_hits${f}[1m])) / sum(rate(vllm:prefix_cache_queries${f}[1m]))`
-  };
+  const window = promDuration(windowSeconds);
+  return (Object.keys(defaultMetricNames) as LatencyMetricKey[]).reduce((queries, key) => {
+    const metric = config.metricNames[key] || defaultMetricNames[key];
+    // 保持旧看板的 ratio 表达式：分片与 role 标签留给 parseLatencyVector 解析。
+    if ('decodeSum' in metric) {
+      queries[key] = `rate(${metric.decodeSum}${f}[${window}]) / (rate(${metric.generationTokensSum}${f}[${window}]) - rate(${metric.generationTokensCount}${f}[${window}]))`;
+    } else {
+      queries[key] = `rate(${metric.sum}${f}[${window}]) / rate(${metric.count}${f}[${window}])`;
+    }
+    return queries;
+  }, {} as Record<LatencyMetricKey, string>);
+}
+export const MODEL_DISCOVERY_QUERY = 'count by (model_name) (vllm:num_requests_running)';
+/**
+ * Prometheus 的 vLLM gauge 标签 → 当前已采集的模型列表。空闲模型也有值为 0 的 gauge。
+ * 不从 LiteLLM 推断指标名。回放后端若使用逻辑别名，反向读取显式映射来确定 model_id。
+ */
+export function parseModelVector(raw: unknown, metricsMap: Record<string, string> = {}): Model[] {
+  const names = [...new Set(promResult(raw, 'vector').map(series => series.metric.model_name).filter((name): name is string => typeof name === 'string' && !!name.trim()))].sort();
+  return names.map(name => {
+    const aliases = Object.entries(metricsMap).filter(([, metricsName]) => metricsName === name).map(([alias]) => alias);
+    return { id: name, name, metricsName: name, provider: 'vLLM', replayModelId: aliases.length === 1 ? aliases[0] : undefined, replayError: aliases.length > 1 ? `指标模型 ${name} 对应多个回放别名，请配置唯一对应关系` : undefined };
+  });
+}
+export async function fetchModels(config: ApiConfig = DEFAULT_API_CONFIG): Promise<Model[]> {
+  return parseModelVector(await requestPrometheus(promPath(MODEL_DISCOVERY_QUERY, undefined, config)), config.modelMetricsMap);
 }
 /**
  * /api/litellm/model/info → 前端逻辑模型列表。
@@ -203,12 +266,12 @@ export async function fetchLoad(modelName: string, range: TimeRange, labels?: La
   return data;
 }
 /** 即时 query → 页面顶部卡片；这些值不是历史选区的汇总结果。 */
-export async function fetchMetrics(modelName: string, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {
-  const queries = metricQueries(modelName);
-  const keys = Object.keys(queries) as (keyof Metrics)[];
-  const results = await Promise.allSettled(keys.map(async key => parseVector(await requestPrometheus(promPath(queries[key], undefined, config)))));
+export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {
+  const queries = metricQueries(modelName, windowSeconds, config);
+  const keys = Object.keys(queries) as MetricKey[];
+  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config)), modelName)));
   const data = {} as Metrics;
-  results.forEach((r, i) => { data[keys[i]] = r.status === 'fulfilled' ? { value: r.value } : { error: r.reason.message }; if(r.status === 'rejected') console.warn(r.reason); });
+  results.forEach((r, i) => { data[keys[i]] = r.status === 'fulfilled' ? r.value : { error: r.reason.message }; if(r.status === 'rejected') console.warn(r.reason); });
   return data;
 }
 // 本地演示模型，与 /api/litellm/model/info 无关。
@@ -233,4 +296,4 @@ export function demoLoad(modelId: string, range: TimeRange, optimized = false): 
   });
   return { running: [{ id: modelId, name: modelId, points: build(false) }], waiting: [{ id: modelId, name: modelId, points: build(true) }], errors: [] };
 }
-export const emptyMetrics: Metrics = { ttft: {}, e2e: {}, throughput: {}, cache: {} };
+export const emptyMetrics: Metrics = { ttft: {}, e2e: {}, itl: {}, tpot: {}, qt: {} };

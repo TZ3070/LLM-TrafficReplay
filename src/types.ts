@@ -1,9 +1,11 @@
-/** 从 LiteLLM 模型配置适配而来，演示模式则来自 demoModels。 */
+/** 后端模式取 Prometheus 的 model_name 标签，演示模式取 demoModels。 */
 export interface Model {
-  id: string; // 逻辑模型标识：下拉框选中值，也是 POST /api/replays 的 model_id。
-  name: string; // 页面展示名；当前适配器使用 LiteLLM 的 model_name。
+  id: string; // 下拉框选中值；真实模式为 Prometheus model_name。
+  name: string; // 页面展示实际指标中的模型名称。
   provider?: string;
   metricsName?: string; // vLLM 指标的 model_name；未提供时回退 name。
+  replayModelId?: string; // 可选显式逻辑别名；未配置时向回放后端提交 id。
+  replayError?: string; // 多个别名对应同一指标模型时阻止自动选择回放目标。
 }
 // 状态和接口均使用 Unix 秒；作为回放请求时采用 [start, end)。
 export interface TimeRange { start: number; end: number }
@@ -33,5 +35,8 @@ export interface Replay {
   statusError?: string;
 }
 // 即时指标：查询失败时仅填 error，成功空结果时 value 为 undefined。
-export interface Metric { value?: number; error?: string }
-export type Metrics = Record<'ttft' | 'e2e' | 'throughput' | 'cache', Metric>;
+export interface MetricRow { name: string; role?: string; value?: number }
+export interface Metric { value?: number; error?: string; rows?: MetricRow[] }
+export type LatencyMetricKey = 'ttft' | 'e2e' | 'itl' | 'tpot' | 'qt';
+export type MetricKey = LatencyMetricKey;
+export type Metrics = Record<MetricKey, Metric>;

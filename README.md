@@ -9,14 +9,15 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 ## 数据来源与流向
 
 ```text
-模型配置：LiteLLM → 看板后端 /api/litellm/model/info
-                  → data.ts / adaptModels → App.models → 模型下拉框
+模型列表：vLLM /metrics → Prometheus
+        → 看板后端 /api/prometheus/query（count by (model_name)）
+        → data.ts / fetchModels / parseModelVector → App.models → 模型下拉框
 
 历史曲线：vLLM /metrics → Prometheus → 看板后端 /api/prometheus/query_range
                       → data.ts / parseMatrix → App.history → 左侧 LoadChart
 
 即时卡片：Prometheus → 看板后端 /api/prometheus/query
-                   → data.ts / parseVector → App.metrics → 顶部指标卡
+                   → data.ts / parseLatencyVector → App.metrics → TTFT/E2E/ITL/TPOT/QT 五张卡
 
 创建回放：左侧刷选 / 时间输入 → App.selection
         → POST /api/replays { model_id, start_time, end_time }
@@ -32,7 +33,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 | 文件 | 数据相关职责 |
 |---|---|
 | src/data.ts | 接口调用、缓存/限流、PromQL、原样 JSON 解析、演示数据 |
-| src/apiConfig.ts | 接口路径配置、LiteLLM 逻辑模型名到 vLLM 指标标签的显式映射 |
+| src/apiConfig.ts | 接口路径、指标名称、回放逻辑别名与 vLLM 模型标签的显式映射 |
 | src/App.tsx | 查询条件、历史选区、回放提交、状态轮询与两个窗口的数据分配 |
 | src/types.ts | 模型 ID、指标标签、数据类型及时间单位约定 |
 | src/LoadChart.tsx | 绘制、异常值断点、tooltip、刷选边界回传，不发 HTTP 请求 |
@@ -65,7 +66,7 @@ npm run dev
 在 GitHub 新建空仓库 TrafficReplay，先不要自动添加 README、.gitignore 或 License。在本机 PowerShell 中执行：
 
 ```powershell
-Set-Location 'C:\Users\Chisato\Documents\Codex\2026-10-10\xian-z\outputs\llm-dashboard'
+Set-Location 'D:\ai_workspace\llm-dashboard'
 git init
 git add .
 git status --short
@@ -105,13 +106,12 @@ cp .env.example .env.local
 ```dotenv
 BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>
 VITE_PROMETHEUS_API_PREFIX=/api/prometheus
-VITE_MODEL_INFO_PATH=/api/litellm/model/info
 VITE_MODEL_METRICS_MAP='{}'
 VITE_REPLAY_CREATE_PATH=/api/replays
 VITE_REPLAY_STATUS_PATH=/api/replays/{id}
 ```
 
-地址填写另一台电脑能访问的看板后端地址，不是 Prometheus、LiteLLM 或 vLLM 地址。后端位于其他机器时，不应填写 127.0.0.1。修改连接配置后重启 `npm run dev`。页面选择“后端”，在连接设置中填写所需认证头和值，再确认模型列表、历史指标和回放接口可用。
+地址填写另一台电脑能访问的看板后端地址，不是 Prometheus、LiteLLM 或 vLLM 地址。后端位于其他机器时，不应填写 127.0.0.1。修改连接配置后重启 `npm run dev`。页面选择“后端”，先确认 Prometheus 模型列表与历史指标。只有需要认证的回放接口才在连接设置中填写所需认证头和值；模型列表和指标查询无需 LiteLLM 认证。
 
 后续同步源码：`git pull`、`npm ci`，然后重新启动。自己的 .env.local 不进入 Git，因此不会被其他电脑的连接配置替换。
 
@@ -119,15 +119,23 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 ## 后端连接
 
-将 `.env.example` 复制为 `.env.local`，配置 `BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>`，重启服务。页面选择“后端”，在右上角连接设置中配置认证头和值。凭据只保存在内存中。生产部署通过反向代理将 `/api` 路由到看板后端。
+将 `.env.example` 复制为 `.env.local`，配置 `BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>`，重启服务。页面选择“后端”即可查询 Prometheus 模型列表和指标；回放接口需要认证时在右上角设置中配置认证头和值。凭据只保存在内存中。生产部署通过反向代理将 `/api` 路由到看板后端。
 
 `BACKEND_URL` 用于 Vite 本地代理，不会将后端地址写入生产页面。生产部署需将 `npm run build` 生成的 dist/ 放到静态服务，并配置 `/api` 反向代理；不能只把 dist/ 放到 GitHub Pages 后期望其自动连接后端。
 
-默认路径为 `/api/prometheus/query`、`/api/prometheus/query_range` 和 `/api/litellm/model/info`。Prometheus 前缀可通过 `VITE_PROMETHEUS_API_PREFIX` 配置，模型路径可通过 `VITE_MODEL_INFO_PATH` 配置；均使用以 `/api/` 开头的同源路径。指标按 30 秒刷新，隐藏页面暂停；历史截止时间固定后不自动刷新。同一 Prometheus URL 在前端缓存并去重 30 秒，429 后共享退避 60 秒。不同指标查询使用 allSettled 隔离失败，保留 NaN 和 Inf。
+模型列表和即时卡片使用 `/api/prometheus/query`，负载曲线使用 `/api/prometheus/query_range`。Prometheus 前缀可通过 `VITE_PROMETHEUS_API_PREFIX` 配置；均使用以 `/api/` 开头的同源路径。旧的 `VITE_MODEL_INFO_PATH` 仅保留兼容配置，首页已不调用 LiteLLM 模型列表接口。指标按 30 秒刷新，隐藏页面暂停；历史截止时间固定后不自动刷新。同一 Prometheus URL 在前端缓存并去重 30 秒，429 后共享退避 60 秒。不同指标查询使用 allSettled 隔离失败，保留 NaN 和 Inf。
+
+首页五张延迟卡片 TTFT、E2E、ITL、TPOT、QT 都使用即时 `GET /api/prometheus/query`，每张卡独立发送一条 PromQL。TTFT/E2E/ITL/QT 使用 rate(_sum)/rate(_count)；TPOT 使用解码耗时率除以生成 token 率减请求率，减法置于分母括号内。各表达式未加外层 avg。响应中的同模型、同 role 的 engine 延迟在前端求算术平均，PD 的 prefill/decode 保留为独立行；单条已聚合的结果直接取值，NaN/Inf 保留且参与运算。表达式内核为 `rate(<metric>_sum{model_name="当前模型"}[<历史范围>]) / rate(<metric>_count{model_name="当前模型"}[<历史范围>])`；例如选择 12 小时，窗口就是 `[12h]`。后端接收完整 query，在看板后端的 TTL 缓存中按 URL 缓存，再请求 `${PROMETHEUS_TARGET}/api/v1/query`。因此这些卡片没有值时，应先看 Network 中的 query、HTTP 响应和 `data.result`，再区分路由错误、指标名错误、模型标签不匹配和窗口内没有样本。
+
+卡片的评估时刻是现在，修改历史截止时间不会把即时 query 的评估时刻移到过去；它只调整左侧 query_range。拖拽回放子区间也不改变延迟卡的回溯长度。模型或历史范围切换时清空旧卡片并重新查询，旧模型尚未完成的响应不会覆盖新模型数据。历史曲线与即时卡片并发加载，卡片独立显示加载、空样本、NaN 和可展开的查询错误。首页只查询这五项延迟指标，整个历史查询刷新共发 2 条区间曲线和 5 条即时指标请求；首次模型发现另发 1 条，页面每 30 秒刷新指标。模型列表通过“刷新列表”按钮更新，同样受 30 秒缓存限制，不持续轮询。
+
+默认指标名已按旧看板提供的表达式配置：TTFT `vllm:time_to_first_token_seconds`、E2E `vllm:e2e_request_latency_seconds`、ITL `vllm:inter_token_latency_seconds`、QT `vllm:request_queue_time_seconds`。TPOT 为 `rate(vllm:request_decode_time_seconds_sum[窗口]) / (rate(vllm:request_generation_tokens_sum[窗口]) - rate(vllm:request_generation_tokens_count[窗口]))`，三项均附加当前模型筛选。分母为 0 时保留 Prometheus 返回的 NaN/Inf，不替换为 0。
+
+例如部署的 ITL 名称为其他指标时，在 .env.local 中配置 `VITE_PROMETHEUS_METRIC_NAMES='{"itl":{"sum":"custom:itl_sum","count":"custom:itl_count"}}'`，修改后重新构建。示例中的 custom 名称仅说明格式，不能直接用于真实部署。TPOT 覆盖配置必须包含 decodeSum、generationTokensSum、generationTokensCount 三个完整指标名，例如 `{"tpot":{"decodeSum":"vllm:request_decode_time_seconds_sum","generationTokensSum":"vllm:request_generation_tokens_sum","generationTokensCount":"vllm:request_generation_tokens_count"}}`。
 
 ### 模型列表可加载，但指标提示 404
 
-`BACKEND_URL` 决定请求发往哪台看板服务器，接口路径决定由该服务器哪个路由处理。能加载模型列表只证明 LiteLLM 透传路由可达，不能证明 Prometheus 路由存在。默认代理不移除 `/api`，通常应将 BACKEND_URL 填为 `http://<BACKEND_IP>:<BACKEND_PORT>`，不要再追加 `/api`。若后端本身安装在子路径，应按实际部署调整代理，不能直接套用此默认配置。
+`BACKEND_URL` 决定请求发往哪台看板服务器，接口路径决定由该服务器哪个路由处理。早期版本模型列表来自 LiteLLM，能加载列表只证明其透传路由可达。当前列表直接查询 Prometheus，但仍应检查每个失败指标请求的实际路径。默认代理不移除 `/api`，通常应将 BACKEND_URL 填为 `http://<BACKEND_IP>:<BACKEND_PORT>`，不要再追加 `/api`。若后端本身安装在子路径，应按实际部署调整代理，不能直接套用此默认配置。
 
 已确认真实后端使用 `prometheus`。早期接口说明中的 `promethues` 拼写有误，会导致 `API route not found`。若自己的 .env.local 仍有旧值，必须修改，否则它会覆盖更新后的代码默认值：
 
@@ -153,26 +161,26 @@ BACKEND_PROXY_DEBUG=true
 
 当前 Vite 的 preview 默认继承 server.proxy，本项目另将 preview.proxy 显式设为同一对象便于核对；显式配置本身不能证明已修复生产环境的 404。如果正确目标上的简单查询成功，而某条业务 PromQL 返回 404，应复制旧前端成功查询的完整 URL 参数，在新前端执行同一查询，并查看后端路由日志，而不是继续更换接口前缀。
 
-### 模型列表与指标模型名的对应关系
+### Prometheus 模型列表与回放名称
 
-下拉框取 LiteLLM `/model/info` 响应的 `data[].model_name`，同名部署合并为一个逻辑模型。它表示网关别名，不一定等于 vLLM 暴露的 `model_name`，也不一定等于 `litellm_params.model`。目前不会根据 provider 前缀自动推断这个对应关系。
+模型下拉框直接从 `count by (model_name) (vllm:num_requests_running)` 的 vector 标签生成。Prometheus 必须已配置采集各 vLLM 的 `/metrics`；前端通过看板后端查询，不直接访问 vLLM。不需要新增后端接口。值为 0 的空闲模型仍保留，同名 engine/role 合并为一个选项。
 
-先用已确认的 query 路由查询 `count by (model_name) (vllm:num_requests_running)`，查看 Prometheus 返回的真实标签。若逻辑别名为 `qwen-service`，真实标签为 `Qwen/Qwen3-32B`，则配置：
+新增或重命名的模型在 Prometheus 采集后，点击“刷新列表”即可获取；前后端均有 30 秒缓存，因此可能需要等待 TTL 到期。该列表反映当前已采集且仍有效的序列，停止采集或过期的旧模型不会因为历史范围较长就自动出现在列表中。
+
+五张延迟卡和两条负载曲线都直接使用所选名称匹配 `model_name`。回放请求默认也把该名称作为 `model_id`。如果回放后端仍要求 LiteLLM 别名，需要显式配置：
 
 ```dotenv
-VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B"}'
+VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 ```
 
-这个示例仅说明格式，必须替换为部署的真实名称。映射优先于响应的 `metrics_model_name` / `model_info.metrics_model_name`，未映射时使用响应中的指标名，仍未提供时回退逻辑模型名。映射只影响指标筛选：下拉框和回放请求的 model_id 仍为 `qwen-service`。合并同名实例会保留已有元数据；实例声明的指标名冲突时会明确报错。
+此时下拉框显示 `Qwen/Qwen3-32B-v2`，指标也筛选该名称，回放请求提交 `qwen-service`。映射用于明确回放目标，不修改指标模型列表；多个别名映射到同一指标名称时，前端阻止自动回放，需先修正为唯一对应关系。连接设置显示实际的 model_name 和回放 model_id。
 
-如果下拉框本身出现不应有的模型，或字段/分组结构不同，需要拿脱敏的 `/api/litellm/model/info` JSON 样例修改 `adaptModels` 或后端配置；指标名映射不会过滤或重命名列表。不要把 `model_info.id`（实例 ID）直接当成逻辑模型名，除非回放后端明确约定如此。
-
-路由成功但指标为空时，再核对 vLLM 是否已被采集、时间范围、实际指标名和模型标签。当前延迟卡使用 `[1m]` 窗口，若 scrape interval 过长，应增大 `metricQueries` 中的 rate 窗口；缓存指标名也需与部署版本核对。这些问题通常表现为空结果或查询错误，与 `API route not found` 是不同层次。
+路由成功但指标为空时，再核对 vLLM 是否已被采集、时间范围、实际指标名和模型标签。五张延迟卡片的 rate 窗口跟随历史查询范围；若 scrape interval 大于所选窗口或窗口内没有请求，Prometheus 可能返回空结果或 `NaN`。这些问题与 `API route not found` 是不同层次。
 
 ## 待联调的约定
 
-- 模型配置适配：`src/data.ts` 的 `adaptModels`，目前接受数组或 `{ data: [{ model_name, litellm_params, model_info }] }`，相同名称合并为一个下拉项。可通过 `metrics_model_name`、`model_info.metrics_model_name` 或 `VITE_MODEL_METRICS_MAP` 映射 vLLM 标签。需要实际 JSON 样例确认。
-- 指标清单和 PromQL 在 `src/data.ts` 的 `loadQueries`、`metricQueries`。延迟按分片均值平均，计数器先 rate 再 sum；缓存先分别 sum 再相除。prefix cache 指标名称须与当前 vLLM 版本核对。卡片为当前指标，不是所选历史区间的汇总。
+- 模型发现：`src/data.ts` 的 `fetchModels` / `parseModelVector`，从即时查询的 `model_name` 标签生成下拉项；`adaptModels` 保留为旧 LiteLLM 适配函数，首页不再调用它。回放后端需能识别该模型名，或配置一对一的 `VITE_MODEL_METRICS_MAP`。
+- 指标清单和 PromQL 在 `src/data.ts` 的 `loadQueries`、`metricQueries`。TTFT/E2E/ITL/QT 使用 `rate(_sum[窗口]) / rate(_count[窗口])`，TPOT 使用上述解码耗时与生成 token 的特殊比值，共五条独立即时 query。模型标签来自当前下拉框，窗口来自历史查询范围；指标名可用 `VITE_PROMETHEUS_METRIC_NAMES` 覆盖。卡片数值是 Prometheus 即时查询在该回溯窗口内的 rate 结果，不是 query_range 曲线的前端平均。
 - 回放创建默认 `POST /api/replays`，请求体 `{ model_id, start_time, end_time }`，Unix 秒，左闭右开。返回 `{ replay_id, status, started_at?, request_count?, target?: { metrics_labels } }`。
 - 状态接口默认 `GET /api/replays/{id}`，返回 `{ status, started_at?, finished_at?, request_count?, sent_count?, completed_count?, target?: { metrics_labels } }`。状态支持 queued/preparing/running/draining/succeeded/failed/cancelled。`finished_at` 为全部请求处理完成时间。两个回放路径可通过 VITE_REPLAY_CREATE_PATH / VITE_REPLAY_STATUS_PATH 配置。
 - 接口尚未接真实后端；创建回放响应缺少 replay_id 会明确报错。未知实际开始时间时，前端不会用点击时间替代。
@@ -185,5 +193,5 @@ VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B"}'
 
 ## 已完成验证
 
-TypeScript 与生产构建通过；17 项解析、接口配置、缓存、模型映射、时间轴及时区测试通过。浏览器验证覆盖拖拽选区、模型切换、固定回放模型、手机宽度、相对时间秒刻度和 tooltip、切回绝对时间、运行时错误，以及使用模拟 HTTP 响应的后端路径、NaN 显示和三字段回放请求。另用独立构建验证 `/api/prometheus` 前缀、自定义模型列表路径和逻辑别名到指标名映射，回放提交仍保留逻辑模型 ID。尚未连接真实后端。
+TypeScript 与生产构建通过；23 项解析、接口配置、缓存、模型映射、时间轴及时区测试通过。浏览器验证覆盖拖拽选区、模型切换、固定回放模型、手机宽度、相对时间秒刻度和 tooltip、切回绝对时间、运行时错误，以及使用模拟 HTTP 响应的后端路径、NaN 显示和三字段回放请求。scripts/latency-check.cjs 另验证五条独立延迟 query、当前模型和历史范围过滤、旧响应隔离、慢历史查询隔离、部分失败详情与空样本，以及 PD 角色独立显示、engine 均值、模型重命名后的列表更新和成功空结果清理。尚未连接真实后端。
 
