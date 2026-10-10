@@ -5,6 +5,7 @@ import { relativeTimeUnit } from './chartTime';
 import { DISPLAY_TIME_ZONE, clock, dateTime, fullDateTime, toInput, fromInput } from './time';
 import { adaptModels, ApiError, demoLoad, demoModels, emptyMetrics, fetchLoad, fetchMetrics, formatValue, queryTiming, request } from './data';
 import type { LoadData, Metrics, Model, Replay, TimeRange } from './types';
+import { createApiConfig } from './apiConfig';
 /**
  * 页面编排层：负责选择条件、网络查询、回放任务和组件数据之间的流转。
  * 历史：模型配置 → 当前模型/时间范围 → fetchLoad → history → 左侧 LoadChart。
@@ -13,6 +14,7 @@ import type { LoadData, Metrics, Model, Replay, TimeRange } from './types';
  * 完整请求的检索和重新发送在后端执行；本页只提交回放条件并观测指标。
  */
 const EMPTY: LoadData = { running:[],waiting:[],errors:[] };
+const API = createApiConfig(import.meta.env);
 // 路径由构建时环境配置覆盖；回放接口为待与真实后端联调的契约。
 const CREATE = import.meta.env.VITE_REPLAY_CREATE_PATH || '/api/replays';
 const STATUS = import.meta.env.VITE_REPLAY_STATUS_PATH || '/api/replays/{id}';
@@ -60,8 +62,8 @@ export default function App() {
     let live=true;
     setError('');setSelection(undefined);setReplay(undefined);setReplayData(EMPTY);setMetrics(emptyMetrics);setModels([]);setModelId('');setModelMode(undefined);
     if(mode==='demo'){setModels(demoModels);setModelId(demoModels[0].id);setModelMode('demo');return;}
-    request('/api/litellm/model/info',{}, {apiKey,authHeader}).then(raw=>{
-      if(!live)return;const list=adaptModels(raw);if(!list.length)throw new Error('未找到可选模型，请检查模型配置响应');setModels(list);setModelId(list[0].id);setModelMode('backend');
+    request(API.modelInfoPath,{}, {apiKey,authHeader}).then(raw=>{
+      if(!live)return;const list=adaptModels(raw,API.modelMetricsMap);if(!list.length)throw new Error('未找到可选模型，请检查模型配置响应中的 model_name 字段');setModels(list);setModelId(list[0].id);setModelMode('backend');
     }).catch(e=>{if(live)setError(`模型加载失败：${e.message}`);});
     return()=>{live=false;};
   // 凭据保存在内存中，仅点击应用时重新加载。
@@ -78,10 +80,10 @@ export default function App() {
       // 无选区时按截止时间计算窗口；有选区时保留原窗口，避免自动刷新移动已选边界。
       if(!selectionRef.current){const t=queryTiming(seconds,historyEnd);next={start:t.start,end:t.end};setRange(next);}
       try {
-        const load=mode==='demo'?demoLoad(model.id,next):await fetchLoad(model.metricsName||model.name,next);
+        const load=mode==='demo'?demoLoad(model.id,next):await fetchLoad(model.metricsName||model.name,next,undefined,API);
         if(live){setHistory(load);setUpdatedAt(Math.floor(Date.now()/1000));}
         // 卡片读取当前 query，与历史 query_range 分开；演示分支是固定示例值。
-        const cardData=mode==='demo'?{ttft:{value:.186},e2e:{value:3.42},throughput:{value:846.5},cache:{value:.724}}:await fetchMetrics(model.metricsName||model.name);
+        const cardData=mode==='demo'?{ttft:{value:.186},e2e:{value:3.42},throughput:{value:846.5},cache:{value:.724}}:await fetchMetrics(model.metricsName||model.name,API);
         if(live)setMetrics(cardData);
       }catch(e){if(live)setError((e as Error).message);}finally{busy=false;if(live)setLoading(false);}
     };
@@ -126,7 +128,7 @@ export default function App() {
         const end=current.finishedAt?current.finishedAt+30:Math.max(start+30,Math.floor(Date.now()/1000));
         const window={start,end};
         // 与历史图共用 fetchLoad，但标签和时间来自回放任务；不是读取原历史区间。
-        const data=mode==='demo'?demoLoad(current.modelId,window,true):await fetchLoad(current.metricsName,window,current.metricsLabels);
+        const data=mode==='demo'?demoLoad(current.modelId,window,true):await fetchLoad(current.metricsName,window,current.metricsLabels,API);
         if(live){setReplayRange(window);setReplayData(data);}
         // 后端报告完成后再等待采集/缓存延迟，并在一次无查询错误的结果后停止轮询。
         // 这是前端刷新停止条件，不证明档案完整，也不是通过折线推断任务成功。
@@ -215,7 +217,7 @@ export default function App() {
       </main>
     </div>
     {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label="关闭" disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">确认回放历史流量</h2><p>将所选时间段的请求按原始节奏发送给该模型当前部署。</p><dl><dt>模型</dt><dd>{model?.name}</dd><dt>开始时间</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>结束时间</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>模式</dt><dd>{mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求'}</dd></dl>{error&&<div className="chart-error" role="alert">{error}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>取消</button><button className="button primary" disabled={submitting} onClick={()=>void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}开始回放</button></div></section></div>}
-    {settingsOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close icon-button" aria-label="关闭" onClick={()=>setSettingsOpen(false)}><X size={19}/></button><h2 id="settings-title">后端连接设置</h2><p>请求走同源 /api。开发环境在 .env.local 中配置 BACKEND_URL，然后重启 Vite。</p><label className="settings-field">认证头<select value={authHeader} onChange={e=>setAuthHeader(e.target.value as typeof authHeader)}><option>x-litellm-key</option><option>x-api-key</option><option>Authorization</option></select></label><label className="settings-field">认证值<input type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={authHeader==='Authorization'?'Bearer …':'LiteLLM API key'}/></label><p className="settings-note">凭据仅保存在页面内存中，不写入本地存储。Prometheus 查询不携带认证。</p><div className="endpoint-list"><code>/api/litellm/model/info</code><code>/api/promethues/query_range</code><code>{CREATE}</code></div><div className="modal-actions"><button className="button primary" disabled={active} onClick={()=>{setSettingsToken(t=>t+1);setSettingsOpen(false);}}>应用设置</button></div></section></div>}
+    {settingsOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close icon-button" aria-label="关闭" onClick={()=>setSettingsOpen(false)}><X size={19}/></button><h2 id="settings-title">后端连接设置</h2><p>在 .env.local 中配置 BACKEND_URL 和接口路径，修改后重新运行 npm run dev。下方显示本次构建使用的路由。</p><label className="settings-field">认证头<select value={authHeader} onChange={e=>setAuthHeader(e.target.value as typeof authHeader)}><option>x-litellm-key</option><option>x-api-key</option><option>Authorization</option></select></label><label className="settings-field">认证值<input type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={authHeader==='Authorization'?'Bearer …':'LiteLLM API key'}/></label><p className="settings-note">凭据仅保存在页面内存中，不写入本地存储。Prometheus 查询不携带认证。</p><div className="endpoint-list"><code>{API.modelInfoPath}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code>{model&&<code>model_name = {model.metricsName||model.name}</code>}</div><div className="modal-actions"><button className="button primary" disabled={active} onClick={()=>{setSettingsToken(t=>t+1);setSettingsOpen(false);}}>应用设置</button></div></section></div>}
   </div>;
 }
 

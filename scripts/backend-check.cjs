@@ -3,19 +3,24 @@ const assert=require('assert');
 (async()=>{
   const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
   const page=await browser.newPage({viewport:{width:1440,height:1080}});
+  // 可对另一份构建验证自定义路由和模型映射；所有 API 在浏览器中拦截，不访问真实模型。
+  const baseUrl=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
+  const promPrefix=process.env.CHECK_PROMETHEUS_PREFIX||'/api/prometheus';
+  const modelInfoPath=process.env.CHECK_MODEL_INFO_PATH||'/api/litellm/model/info';
+  const metricsModel=process.env.CHECK_METRICS_MODEL||'backend-model';
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   let submitted,headerKey;let promRequests=0;
   const started=Math.floor(Date.now()/1000);
   await page.route('**/api/**',async route=>{
     const req=route.request(),url=new URL(req.url());let body;
-    if(url.pathname==='/api/litellm/model/info')body={data:[{model_name:'backend-model',litellm_params:{custom_llm_provider:'vllm'}},{model_name:'other-model'}]};
-    else if(url.pathname==='/api/promethues/query'){
+    if(url.pathname===modelInfoPath)body={data:[{model_name:'backend-model',litellm_params:{custom_llm_provider:'vllm'}},{model_name:'backend-model'},{model_name:'other-model'}]};
+    else if(url.pathname===`${promPrefix}/query`){
       promRequests++;assert(!req.headers()['x-litellm-key']);
-      const q=url.searchParams.get('query');body={status:'success',data:{resultType:'vector',result:[{metric:{},value:[started,q.includes('time_to_first')?'NaN':'2']}]}};
-    }else if(url.pathname==='/api/promethues/query_range'){
+      const q=url.searchParams.get('query');assert(q.includes(`model_name="${metricsModel}"`));body={status:'success',data:{resultType:'vector',result:[{metric:{},value:[started,q.includes('time_to_first')?'NaN':'2']}]}};
+    }else if(url.pathname===`${promPrefix}/query_range`){
       promRequests++;const start=Number(url.searchParams.get('start')),end=Number(url.searchParams.get('end'));
-      assert(url.searchParams.get('query').includes('model_name="backend-model"'));
-      body={status:'success',data:{resultType:'matrix',result:[{metric:{model_name:'backend-model'},values:Array.from({length:61},(_,i)=>[start+(end-start)*i/60,String(i%12)])}]}};
+      assert(url.searchParams.get('query').includes(`model_name="${metricsModel}"`));
+      body={status:'success',data:{resultType:'matrix',result:[{metric:{model_name:metricsModel},values:Array.from({length:61},(_,i)=>[start+(end-start)*i/60,String(i%12)])}]}};
     }else if(url.pathname==='/api/replays'&&req.method()==='POST'){
       submitted=req.postDataJSON();headerKey=req.headers()['idempotency-key'];
       body={replay_id:'backend-replay-1',status:'queued',request_count:42};
@@ -23,9 +28,10 @@ const assert=require('assert');
     else throw new Error('unexpected route '+url.pathname);
     await route.fulfill({status:url.pathname==='/api/replays'?202:200,contentType:'application/json',body:JSON.stringify(body)});
   });
-  await page.goto('http://127.0.0.1:4173');
+  await page.goto(baseUrl);
   await page.getByRole('button',{name:'后端',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#model')?.value==='backend-model');
+  assert.equal(await page.locator('#model option').count(),2,'same-name instances must merge');
   await page.locator('.metric-value.nan').waitFor();
   assert((await page.locator('.metric-value.nan').innerText()).includes('NaN'));
   const box=await page.locator('.load-chart').first().boundingBox();

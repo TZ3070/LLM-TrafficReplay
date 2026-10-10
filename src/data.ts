@@ -1,8 +1,9 @@
 import type { LoadData, Metrics, Model, Point, Series, TimeRange } from './types';
+import { DEFAULT_API_CONFIG, type ApiConfig } from './apiConfig';
 
 /**
  * 数据入口与适配层。
- * 真实指标：vLLM /metrics → Prometheus → 看板后端 /api/promethues/*
+ * 真实指标：vLLM /metrics → Prometheus → 看板后端 /api/prometheus/*
  *          → 本文件解析 vector/matrix → App 状态 → 指标卡 / LoadChart。
  * 模型列表：LiteLLM /model/info → 看板后端透传 → adaptModels → 模型下拉框。
  * 演示数据：demoModels / demoLoad 在浏览器生成，不读取后端或发送推理请求。
@@ -109,18 +110,33 @@ export function metricQueries(modelName: string) {
  * /api/litellm/model/info → 前端逻辑模型列表。
  * 同名 LiteLLM 实例合并为一个选项；id 提交回放，metricsName 用于 Prometheus 筛选。
  * 当前接受数组或 { data: [...] }；实际响应不同应在这里集中调整字段映射。
+ * 不推断 litellm_params.model：其 provider 前缀/模型路径不一定等于 vLLM 标签。
+ * 显式配置的映射优先于响应中的 metrics_model_name；不改变回放的逻辑模型 ID。
  */
-export function adaptModels(raw: unknown): Model[] {
+export function adaptModels(raw: unknown, metricsMap: Record<string, string> = {}): Model[] {
   const response = raw as { data?: unknown };
   const rows = Array.isArray(raw) ? raw : response?.data;
-  if (!Array.isArray(rows)) throw new Error('模型配置格式不匹配，请调整 adaptModels');
+  if (!Array.isArray(rows)) throw new Error('模型配置应为数组或 { data: [...] }，请按实际 JSON 调整 adaptModels');
   const grouped = new Map<string, Model>();
   for (const item of rows) {
     if (typeof item !== 'object' || !item) continue;
     const row = item as Record<string, any>;
     const name = row.model_name;
-    if (typeof name !== 'string') continue;
-    grouped.set(name, { id: name, name, provider: row.litellm_params?.custom_llm_provider, metricsName: row.metrics_model_name || row.model_info?.metrics_model_name });
+    if (typeof name !== 'string' || !name.trim()) continue;
+    const mapped = Object.hasOwn(metricsMap, name) ? metricsMap[name] : undefined;
+    const declared = row.metrics_model_name || row.model_info?.metrics_model_name;
+    const metricsName = mapped || (typeof declared === 'string' && declared.trim() ? declared : undefined);
+    const provider = row.litellm_params?.custom_llm_provider;
+    const previous = grouped.get(name);
+    if (previous?.metricsName && metricsName && previous.metricsName !== metricsName) {
+      throw new Error(`模型 ${name} 的实例具有不同指标名，请确认分组或配置 VITE_MODEL_METRICS_MAP`);
+    }
+    // 同名实例合并时保留已有元数据，避免最后一个实例的缺失字段覆盖正确映射。
+    grouped.set(name, {
+      id: name, name,
+      provider: previous?.provider || (typeof provider === 'string' ? provider : undefined),
+      metricsName: previous?.metricsName || metricsName
+    });
   }
   return [...grouped.values()];
 }
@@ -135,17 +151,16 @@ const promCache = new Map<string, { promise: Promise<any>; expires: number }>();
 let rateLimitUntil = 0;
 export function request(path: string, options: RequestInit = {}, auth?: ClientOptions): Promise<any> {
   if(Date.now() < rateLimitUntil && path.startsWith('/api/')) return Promise.reject(new ApiError('请求限流，正在等待 60 秒后恢复', 429));
-  const cached = path.startsWith('/api/promethues/') && (!options.method || options.method === 'GET');
-  if(cached) {
-    const existing=promCache.get(path);
-    if(existing && existing.expires>Date.now())return existing.promise;
-    for(const [key,value] of promCache)if(value.expires<=Date.now())promCache.delete(key);
-  }
-  const promise = performRequest(path,options,auth);
-  if(cached){
-    promCache.set(path,{promise,expires:Date.now()+30000});
-    promise.catch(()=>promCache.delete(path));
-  }
+  return performRequest(path,options,auth);
+}
+// 由指标入口显式使用缓存，改路由前缀后仍保持 30s 去重，不依赖某一种拼写。
+function requestPrometheus(path: string): Promise<any> {
+  const existing=promCache.get(path);
+  if(existing && existing.expires>Date.now())return existing.promise;
+  for(const [key,value] of promCache)if(value.expires<=Date.now())promCache.delete(key);
+  const promise=request(path);
+  promCache.set(path,{promise,expires:Date.now()+30000});
+  promise.catch(()=>{if(promCache.get(path)?.promise===promise)promCache.delete(path);});
   return promise;
 }
 async function performRequest(path: string, options: RequestInit = {}, auth?: ClientOptions): Promise<any> {
@@ -161,35 +176,37 @@ async function performRequest(path: string, options: RequestInit = {}, auth?: Cl
     if(response.status===429)rateLimitUntil=Date.now()+60000;
     const raw = await response.text();
     let result;
-    try { result = JSON.parse(raw); } catch { throw new ApiError('后端返回非 JSON 响应，请检查代理配置', response.status); }
-    if (!response.ok) throw new ApiError([result.error, result.details].filter(Boolean).join(' · ') || `HTTP ${response.status}`, response.status);
+    // 错误只展示路由，不输出查询串或认证头，便于定位后端不存在的接口。
+    const route = path.split('?')[0];
+    try { result = JSON.parse(raw); } catch { throw new ApiError(`HTTP ${response.status} · ${route} · 后端返回非 JSON 响应，请检查代理配置`, response.status); }
+    if (!response.ok) throw new ApiError([`HTTP ${response.status}`, route, result?.error, result?.details].filter(Boolean).join(' · '), response.status);
     return result;
   } finally { clearTimeout(timeout); }
 }
-// 保留现有后端的 promethues 拼写；URLSearchParams 编码 PromQL，不改变其聚合语义。
-function promPath(query: string, range?: TimeRange): string {
+// 前缀来自环境配置；URLSearchParams 编码 PromQL，不改变其聚合语义。
+export function promPath(query: string, range?: TimeRange, config = DEFAULT_API_CONFIG): string {
   const params = new URLSearchParams({ query });
   if (range) {
     params.set('start', String(range.start)); params.set('end', String(range.end));
     params.set('step', String(queryTiming(range.end - range.start).step));
   }
-  return `/api/promethues/${range ? 'query_range' : 'query'}?${params}`;
+  return `${config.prometheusPrefix}/${range ? 'query_range' : 'query'}?${params}`;
 }
 /** 历史窗口与回放窗口共用此入口，只是模型标签和查询时间不同。 */
-export async function fetchLoad(modelName: string, range: TimeRange, labels?: Labels): Promise<LoadData> {
+export async function fetchLoad(modelName: string, range: TimeRange, labels?: Labels, config: ApiConfig = DEFAULT_API_CONFIG): Promise<LoadData> {
   const queries = loadQueries(modelName, labels);
   const keys = ['running', 'waiting'] as const;
   // 单条曲线失败时保留另一条的成功结果，错误信息交给页面展示。
-  const results = await Promise.allSettled(keys.map(async key => parseMatrix(await request(promPath(queries[key], range)))));
+  const results = await Promise.allSettled(keys.map(async key => parseMatrix(await requestPrometheus(promPath(queries[key], range, config)))));
   const data: LoadData = { running: [], waiting: [], errors: [] };
   results.forEach((r, i) => { if (r.status === 'fulfilled') data[keys[i]] = r.value; else { data.errors.push(`${keys[i]}：${r.reason.message}`); console.warn(r.reason); } });
   return data;
 }
 /** 即时 query → 页面顶部卡片；这些值不是历史选区的汇总结果。 */
-export async function fetchMetrics(modelName: string): Promise<Metrics> {
+export async function fetchMetrics(modelName: string, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {
   const queries = metricQueries(modelName);
   const keys = Object.keys(queries) as (keyof Metrics)[];
-  const results = await Promise.allSettled(keys.map(async key => parseVector(await request(promPath(queries[key])))));
+  const results = await Promise.allSettled(keys.map(async key => parseVector(await requestPrometheus(promPath(queries[key], undefined, config)))));
   const data = {} as Metrics;
   results.forEach((r, i) => { data[keys[i]] = r.status === 'fulfilled' ? { value: r.value } : { error: r.reason.message }; if(r.status === 'rejected') console.warn(r.reason); });
   return data;
