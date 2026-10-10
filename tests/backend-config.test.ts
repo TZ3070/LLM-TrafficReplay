@@ -55,6 +55,11 @@ test('deployed histogram names can be configured and every duration is a valid P
   assert.throws(()=>createApiConfig({VITE_PROMETHEUS_METRIC_NAMES:'{"tpot":{"sum":"custom:decode_sum","count":"custom:tokens_count"}}'}), /decodeSum/);
 });
 
+test('mixed latency role model matching defaults to DeepSeek and can be configured', () => {
+  assert.deepEqual(createApiConfig({}).mixedLatencyRoleModels, ['deepseek']);
+  assert.deepEqual(createApiConfig({VITE_MIXED_LATENCY_ROLE_MODELS:'deepseek-v3,custom-model'}).mixedLatencyRoleModels, ['deepseek-v3','custom-model']);
+});
+
 test('instant cards isolate failure, preserve NaN and leave successful empty results undefined', async () => {
   const originalFetch=globalThis.fetch, originalWindow=globalThis.window;
   const originalWarn=console.warn;

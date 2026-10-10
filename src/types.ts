@@ -34,7 +34,7 @@ export interface Replay {
   completedCount?: number;
   statusError?: string;
 }
-// 即时指标：查询失败时仅填 error，成功空结果时 value 为 undefined。
+// 即时指标：查询失败时仅填 error，成功空结果时 value 为 undefined；rows 用于按 role 分行的模型。
 export interface MetricRow { name: string; role?: string; value?: number }
 export interface Metric { value?: number; error?: string; rows?: MetricRow[] }
 export type LatencyMetricKey = 'ttft' | 'e2e' | 'itl' | 'tpot' | 'qt';

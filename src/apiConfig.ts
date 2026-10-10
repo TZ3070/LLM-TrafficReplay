@@ -12,13 +12,16 @@ export interface ApiConfig {
   modelMetricsMap: Record<string, string>;
   // 普通延迟覆盖 histogram 名称；TPOT 单独配置 decode_time 和 generation_tokens 名称。
   metricNames: Partial<Record<LatencyMetricKey, MetricNameConfig>>;
+  // 这些模型的延迟卡片混合 proxy/prefill/decode role，默认内置 DeepSeek 匹配。
+  mixedLatencyRoleModels: string[];
 }
 export const DEFAULT_API_CONFIG: ApiConfig = {
   // 与已确认的真实后端路由一致；部署使用其他前缀时可通过环境变量覆盖。
   prometheusPrefix: '/api/prometheus',
   modelInfoPath: '/api/litellm/model/info',
   modelMetricsMap: {},
-  metricNames: {}
+  metricNames: {},
+  mixedLatencyRoleModels: ['deepseek']
 };
 
 function apiPath(value: string | undefined, fallback: string): string {
@@ -67,10 +70,16 @@ export function createApiConfig(env: Record<string, string | undefined>): ApiCon
       }
     }
   }
+  let mixedLatencyRoleModels = DEFAULT_API_CONFIG.mixedLatencyRoleModels;
+  if (env.VITE_MIXED_LATENCY_ROLE_MODELS?.trim()) {
+    mixedLatencyRoleModels = env.VITE_MIXED_LATENCY_ROLE_MODELS.split(',').map(value => value.trim().toLocaleLowerCase()).filter(Boolean);
+    if (!mixedLatencyRoleModels.length) throw new Error('VITE_MIXED_LATENCY_ROLE_MODELS 至少需要一个模型匹配词');
+  }
   return {
     prometheusPrefix: apiPath(env.VITE_PROMETHEUS_API_PREFIX, DEFAULT_API_CONFIG.prometheusPrefix),
     modelInfoPath: apiPath(env.VITE_MODEL_INFO_PATH, DEFAULT_API_CONFIG.modelInfoPath),
     modelMetricsMap,
-    metricNames
+    metricNames,
+    mixedLatencyRoleModels
   };
 }

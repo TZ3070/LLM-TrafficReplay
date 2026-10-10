@@ -43,10 +43,11 @@ test('vector parser rejects an unaggregated card response', () => {
 test('latency ratios average parallel engines and preserve nonfinite signals', () => {
   const vector = (values: string[]) => ({status:'success',data:{resultType:'vector',result:values.map((value, engine)=>({metric:{model_name:'model-a',engine:String(engine)},value:[100,value]}))}});
   assert.deepEqual(parseLatencyVector(vector(['0.2','0.4']), 'model-a'), {value:.30000000000000004});
-  assert(Number.isNaN(parseLatencyVector(vector(['0.2','NaN']), 'model-a').value));
+  assert.equal(parseLatencyVector(vector(['0.2','NaN']), 'model-a').value, .2, 'idle NaN shards are excluded from the average');
   assert.equal(parseLatencyVector(vector(['+Inf','0.2']), 'model-a').value, Infinity);
   assert.deepEqual(parseLatencyVector(vector([]), 'model-a'), {value:undefined});
   assert.deepEqual(parseLatencyVector(vector(['0.42']), 'model-a'), {value:.42});
+  assert(Number.isNaN(parseLatencyVector(vector(['NaN','NaN']), 'model-a').value), 'all-NaN input keeps the real Prometheus signal');
   assert.throws(()=>parseLatencyVector(vector(['0.2']), 'model-b'), /其他模型/);
 });
 
@@ -62,4 +63,15 @@ test('latency PD roles stay separate while their engines are averaged', () => {
   assert.equal(data.rows?.find(row=>row.role==='prefill')?.value, 2);
   assert.equal(data.rows?.find(row=>row.role==='prefill')?.name, 'model-a · prefill');
   assert(Number.isNaN(data.rows?.find(row=>row.role==='decode')?.value));
+});
+
+test('DeepSeek mixes proxy, prefill and decode shards into one row', () => {
+  const result = [
+    {metric:{model_name:'DeepSeek-V3',role:'proxy',engine:'0'},value:[100,'1']},
+    {metric:{model_name:'DeepSeek-V3',role:'prefill',engine:'0'},value:[100,'NaN']},
+    {metric:{model_name:'DeepSeek-V3',role:'decode',engine:'1'},value:[100,'3']}
+  ];
+  const data = parseLatencyVector({status:'success',data:{resultType:'vector',result}}, 'DeepSeek-V3');
+  assert.equal(data.rows, undefined);
+  assert.equal(data.value, 2, 'the idle prefill shard is skipped and proxy/decode are averaged');
 });

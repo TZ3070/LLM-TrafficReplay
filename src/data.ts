@@ -75,23 +75,25 @@ export function parseVector(raw: unknown): number | undefined {
 }
 /**
  * 未聚合的延迟比值（包括 TPOT 的特殊分母）返回各 engine 的延迟均值。
- * 同模型、同 role 的 engine 求算术平均（不是按请求数加权）；PD 角色保留为独立行。
- * 已由 PromQL 聚合的单条结果直接取值。NaN/Inf 参与运算，不能丢掉或替换成 0。
+ * 普通模型按 role 分行；DeepSeek 等配置的模型混合 proxy/prefill/decode 后只展示一行。
+ * 空闲分片的 NaN 不参与平均；若所有分片都是 NaN，则保留真实 NaN 信号。
  */
-export function parseLatencyVector(raw: unknown, modelName: string): Metric {
+export function parseLatencyVector(raw: unknown, modelName: string, mixedRoleModels: string[] = DEFAULT_API_CONFIG.mixedLatencyRoleModels): Metric {
+  const mixedRoles = mixedRoleModels.some(token => modelName.toLocaleLowerCase().includes(token.toLocaleLowerCase()));
   const groups = new Map<string, (number | undefined)[]>();
   for (const series of promResult(raw, 'vector')) {
     if (series.metric.model_name && series.metric.model_name !== modelName) {
       throw new Error('延迟响应包含其他模型，请检查 PromQL 模型筛选');
     }
-    const role = series.metric.role || '';
+    const role = mixedRoles ? '' : (series.metric.role || '');
     const values = groups.get(role) ?? [];
     values.push(series.value ? parsePromValue(series.value[1]) : undefined);
     groups.set(role, values);
   }
   const rows = [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([role, values]) => {
-    const present = values.filter((value): value is number => value !== undefined);
-    const value = present.length ? present.reduce((total, next) => total + next, 0) / present.length : undefined;
+    const present = values.filter((value): value is number => value !== undefined && !Number.isNaN(value));
+    // 只有 NaN/缺失值时保留 NaN；不能把真实的无流量信号改成 0 或空值。
+    const value = present.length ? present.reduce((total, next) => total + next, 0) / present.length : values.some(value => Number.isNaN(value)) ? NaN : undefined;
     return { name: modelName + (role ? ` · ${role}` : ''), role: role || undefined, value };
   });
   if (rows.some(row => row.role)) return { rows };
@@ -269,7 +271,7 @@ export async function fetchLoad(modelName: string, range: TimeRange, labels?: La
 export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {
   const queries = metricQueries(modelName, windowSeconds, config);
   const keys = Object.keys(queries) as MetricKey[];
-  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config)), modelName)));
+  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config)), modelName, config.mixedLatencyRoleModels)));
   const data = {} as Metrics;
   results.forEach((r, i) => { data[keys[i]] = r.status === 'fulfilled' ? r.value : { error: r.reason.message }; if(r.status === 'rejected') console.warn(r.reason); });
   return data;
