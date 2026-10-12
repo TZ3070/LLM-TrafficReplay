@@ -3,6 +3,27 @@
 * { letter-spacing:0!important; }
 .history-end input { height:34px; width:100%; border:1px solid #dfe4ed; border-radius:5px; background:#fbfcfe; color:#27344a; padding:0 8px; font-size:11px; }
 .text-action { float:right; background:none; border:0; color:#6875d8; padding:0; font-size:10px; }
+.language-switch { display:inline-flex; align-items:center; gap:7px; height:30px; padding:0 9px; border:1px solid #e1e5ee; border-radius:5px; background:#fbfcfe; color:#929bad; font-size:10px; white-space:nowrap; }
+.language-switch:hover { border-color:#aeb8dd; background:#f3f4ff; }
+.language-switch svg { color:#7a85cb; }
+.language-switch .current { color:#5360bf; font-weight:700; }
+.language-divider { color:#c4cad6; }
+.language-switch:focus-visible { outline:2px solid #7c87df; outline-offset:3px; }
+.section-title { gap:12px; flex-wrap:wrap; }
+.section-title > div { min-width:0; display:flex; align-items:baseline; gap:10px; }
+.section-title > div > span { margin-left:0!important; }
+.metric-label { gap:8px; }
+.metric-label svg { flex-shrink:0; }
+.empty-tip { text-align:left; line-height:1.5; }
+.empty-tip svg { flex-shrink:0; }
+.time-inputs label { min-width:0; }
+.field label { display:flow-root; }
+@media (max-width:520px) {
+  .filters .field { flex:1 1 100%; }
+  .selection-form .time-inputs { flex-direction:column; align-items:stretch; gap:10px; }
+  .selection-form .time-inputs label { width:100%; }
+  .time-inputs .time-arrow { display:none; }
+}
 * { box-sizing:border-box; } body { margin:0; min-width:320px; } button,select,input { font:inherit; } button { cursor:pointer; } button:disabled { cursor:not-allowed; opacity:.55; }
 .app-shell { min-height:100vh; display:flex; background:#f5f7fb; }
 .main-shell { min-width:0; flex:1; } .topbar { height:66px; padding:0 clamp(22px,3.5vw,52px); display:flex; align-items:center; justify-content:space-between; background:#fff; border-bottom:1px solid #e6eaf1; } .breadcrumb { color:#8994a7; font-size:11px; } .header-right{display:flex;align-items:center;gap:17px}.connection{display:flex;align-items:center;gap:7px;color:#23836f;font-family:'DM Mono',monospace;font-size:10px}.connection i{width:6px;height:6px;background:#32b795;border-radius:50%;box-shadow:0 0 0 3px #dff5ee}.connection.demo{color:#9e7838}.connection.demo i{background:#d0a45a;box-shadow:0 0 0 3px #faf0da}.icon-button{border:0;background:transparent;color:#778399;display:grid;place-items:center;padding:6px;border-radius:5px}.icon-button:hover{background:#f1f3f7;color:#39465e}

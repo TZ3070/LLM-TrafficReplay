@@ -4,12 +4,14 @@ import type { LoadData, TimeRange } from './types';
 import { formatValue, normalizeRange } from './data';
 import { chartTime, formatRelativeTime, relativeTimeUnit } from './chartTime';
 import { fullDateTime } from './time';
+import { translate, type Language } from './i18n';
 
 /**
  * 纯图表组件，不发起 HTTP 请求；两种窗口均接收 App 提供的 LoadData。
  * 数据来源和查询条件由 App/data.ts 负责，这里只做绘制、坐标转换和刷选回传。
  */
 interface Props {
+  language?: Language; // 只翻译标题和 tooltip，查询时间、模型和选区保持不变。
   data: LoadData; // matrix 适配结果，演示模式也生成相同结构。
   range: TimeRange; // 查询窗口，Unix 秒。
   selection?: TimeRange; // 父组件持有的选区，用于同步两条折线的阴影。
@@ -20,7 +22,7 @@ interface Props {
 }
 const colors = ['#6d78ec', '#10a78e', '#ba72d6', '#c39732'];
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]!));
-export default function LoadChart({ data, range, selection, onSelect, selectable, relativeOrigin, max }: Props) {
+export default function LoadChart({ data, range, selection, onSelect, selectable, relativeOrigin, max, language = 'zh' }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.ECharts>();
   const callback = useRef(onSelect);
@@ -46,9 +48,10 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
     if (!instance) return;
     // 绝对轴用毫秒；相对轴用经过秒数。转换集中在 chartTime，避免只换标签而保留日历刻度。
     const timeAxis = chartTime(range, relativeOrigin);
+    const t=(text:string,values?:Record<string,string|number>)=>translate(language,text,values);
     const groups = [data.running, data.waiting];
     const series = groups.flatMap((group, grid) => group.map((s,i) => ({
-      name: `${grid === 0 ? '正在处理' : '等待处理'} · ${s.name}`,
+      name: `${t(grid === 0 ? '正在处理' : '等待处理')} · ${s.name}`,
       type: 'line' as const,
       xAxisIndex: grid, yAxisIndex: grid,
       showSymbol: false, symbolSize: 5, connectNulls: false,
@@ -62,9 +65,10 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
     instance.setOption({
       animation: false,
       textStyle: { fontFamily:'Inter, system-ui, sans-serif' },
+      toolbox: selectable ? {feature:{brush:{title:{rect:t('矩形选择'),polygon:t('圈选'),lineX:t('横向选择'),lineY:t('纵向选择'),keep:t('保持选择'),clear:t('清除选择')}}}} : undefined,
       title: [
-        { text:'正在处理', subtext:'请求数 / requests', left:10,top:8,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} },
-        { text:'等待处理', subtext:'请求数 / requests', left:10,top:224,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} }
+        { text:t('正在处理'), subtext:t('请求数 / requests'), left:10,top:8,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} },
+        { text:t('等待处理'), subtext:t('请求数 / requests'), left:10,top:224,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} }
       ],
       // 两行日期/时间标签需要额外空间：两图之间留白，底部保留 52px，避免被回放区间遮挡。
       grid: [{left:46,right:18,top:56,height:116},{left:46,right:18,top:272,bottom:52}],
@@ -82,9 +86,9 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
           const details = groups.flatMap((group,g) => group.map(s => {
             const p = s.points.find(p => p.timestamp === timestamp);
             const color = Number.isNaN(p?.value) ? '#d35163' : '#243047';
-            return `<div style="margin-top:5px">${g===0?'正在处理':'等待处理'} · ${escape(s.name)} <b style="color:${color}">${formatValue(p?.value,0)}</b></div>`;
+            return `<div style="margin-top:5px">${t(g===0?'正在处理':'等待处理')} · ${escape(s.name)} <b style="color:${color}">${formatValue(p?.value,0,language)}</b></div>`;
           })).join('');
-          const elapsed = timeAxis.relative ? `<div>回放 + ${formatRelativeTime(axisValue,range.end-range.start)}（${relativeTimeUnit(range.end-range.start)}）</div>` : '';
+          const elapsed = timeAxis.relative ? `<div>${t('回放 + {elapsed}（{unit}）',{elapsed:formatRelativeTime(axisValue,range.end-range.start),unit:relativeTimeUnit(range.end-range.start,language)})}</div>` : '';
           return `${elapsed}<div>${fullDateTime(timestamp)}</div>${details}`;
         }
       },
@@ -96,6 +100,6 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
       instance.dispatchAction({type:'takeGlobalCursor',key:'brush',brushOption:{brushType:'lineX',brushMode:'single'}});
       instance.dispatchAction({type:'brush',areas:selection?[{brushType:'lineX',xAxisIndex:0,coordRange:[selection.start*1000,selection.end*1000]},{brushType:'lineX',xAxisIndex:1,coordRange:[selection.start*1000,selection.end*1000]}]:[]});
     }
-  }, [data, range, selection, selectable, relativeOrigin, max]);
-  return <div ref={ref} className="load-chart" role="img" aria-label="正在处理与等待处理请求曲线，可通过下方时间输入精确设置回放区间" />;
+  }, [data, range, selection, selectable, relativeOrigin, max, language]);
+  return <div ref={ref} className="load-chart" role="img" aria-label={translate(language,'正在处理与等待处理请求曲线，可通过下方时间输入精确设置回放区间')} />;
 }

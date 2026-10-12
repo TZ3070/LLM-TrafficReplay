@@ -1,5 +1,6 @@
 import type { LatencyMetricKey, LoadData, Metric, MetricKey, Metrics, Model, Point, Series, TimeRange } from './types';
 import { DEFAULT_API_CONFIG, type ApiConfig, type MetricNameConfig } from './apiConfig';
+import type { Language } from './i18n';
 
 /**
  * 数据入口与适配层。
@@ -24,12 +25,12 @@ export function parsePromValue(raw: string): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 // 仅用于展示，不改写解析后的原始值；NaN 的红色样式由组件负责。
-export function formatValue(value?: number, decimals = 2): string {
+export function formatValue(value?: number, decimals = 2, language: Language = 'zh'): string {
   if (value === undefined) return '—';
   if (Number.isNaN(value)) return 'NaN';
   if (value === Infinity) return '+Inf';
   if (value === -Infinity) return '-Inf';
-  return value.toLocaleString('zh-CN', { maximumFractionDigits: decimals });
+  return value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: decimals });
 }
 /**
  * 区间秒数 → 约 60 个点的查询步长，最小 5s；即时卡片的 rate 窗口单独按用户选择的历史范围生成。
@@ -269,7 +270,7 @@ export async function fetchLoad(modelName: string, range: TimeRange, labels?: La
   results.forEach((r, i) => { if (r.status === 'fulfilled') data[keys[i]] = r.value; else { data.errors.push(`${keys[i]}：${r.reason.message}`); console.warn(r.reason); } });
   return data;
 }
-/** 即时 query → 页面顶部卡片；这些值不是历史选区的汇总结果。 */
+/** 即时 query → 页面底部卡片；这些值不是历史选区的汇总结果。 */
 export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {
   const queries = metricQueries(modelName, windowSeconds, config);
   const keys = Object.keys(queries) as MetricKey[];

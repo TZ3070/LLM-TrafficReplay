@@ -1,8 +1,9 @@
 import type { TimeRange } from './types';
 import { timeParts } from './time';
+import { translate, type Language } from './i18n';
 
-export function relativeTimeUnit(spanSeconds: number): string {
-  return spanSeconds < 60 ? '秒' : spanSeconds < 3600 ? '分:秒' : '时:分:秒';
+export function relativeTimeUnit(spanSeconds: number, language: Language = 'zh'): string {
+  return translate(language, spanSeconds < 60 ? '秒' : spanSeconds < 3600 ? '分:秒' : '时:分:秒');
 }
 
 export function formatRelativeTime(seconds: number, spanSeconds: number): string {
