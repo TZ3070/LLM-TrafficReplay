@@ -79,7 +79,7 @@ export default function App() {
   },[mode,settingsToken,modelsToken]);
   // 模型列表刷新后原模型消失时，也需清空旧选区和旧指标。
   useEffect(()=>{selectionRef.current=undefined;setSelection(undefined);setHistory(EMPTY);setMetrics(emptyMetrics);setLoading(false);setMetricsLoading(false);},[modelId]);
-  // 查询左侧历史曲线和顶部即时卡片；成功结果分别进入 history / metrics。
+  // 查询左侧历史曲线和底部即时延迟卡片；成功结果分别进入 history / metrics。
   useEffect(()=>{
     if(!model||modelMode!==mode)return;
     let live=true;let timer:number|undefined;let busy=false;
@@ -217,8 +217,6 @@ export default function App() {
         </section>
         {error&&<div className="error-banner" role="alert">{error}<button aria-label="关闭错误" onClick={()=>setError('')}><X size={15}/></button></div>}
         {model?.replayError&&<div className="error-banner" role="alert">{model.replayError}</div>}
-        <div className="metrics-context">{model?.name||'尚未选择模型'} · 延迟回溯 {promDuration(seconds)} · 即时查询</div>
-        <div className="metrics-grid">{cards.map(metricCard)}</div>
         <div className="section-title"><div><h2>流量实验</h2><span>TRAFFIC REPLAY</span></div><span className="section-hint">历史流量 → 当前模型部署</span></div>
         <div className="charts-grid">
           <section className="chart-panel">
@@ -241,6 +239,11 @@ export default function App() {
             {!replay&&<div className="replay-empty"><div className="empty-orbit"><Activity size={28}/><span className="orbit-dot"/></div><h4>让历史流量，再跑一次</h4><p>在左侧选定时间区间并确认回放。<br/>该模型的新处理与等待曲线将在这里展示。</p><div className="empty-steps"><span><span>1</span>选择区间</span><span className="step-line"/><span><span>2</span>确认回放</span><span className="step-line"/><span><span>3</span>观察效果</span></div><div className="empty-tip"><Check size={14}/>切换查询模型不会改变已创建的回放任务</div></div>}
           </section>
         </div>
+        <section className="latency-section" aria-label="延迟数据">
+          <div className="section-title"><div><h2>延迟数据</h2><span>LATENCY</span></div><span className="section-hint">即时查询 · 回溯 {promDuration(seconds)}</span></div>
+          <div className="metrics-context">{model?.name||'尚未选择模型'} · 延迟回溯 {promDuration(seconds)} · 即时查询</div>
+          <div className="metrics-grid">{cards.map(metricCard)}</div>
+        </section>
         <div className="bottom-note"><span><Terminal size={14}/>{mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析'}</span><span>{updatedAt?`指标更新于 ${clock(updatedAt)}`:'等待指标查询'}<span className="footer-dot">·</span>时间：{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>

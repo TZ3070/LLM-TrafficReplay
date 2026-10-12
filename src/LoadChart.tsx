@@ -64,10 +64,11 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
       textStyle: { fontFamily:'Inter, system-ui, sans-serif' },
       title: [
         { text:'正在处理', subtext:'请求数 / requests', left:10,top:8,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} },
-        { text:'等待处理', subtext:'请求数 / requests', left:10,top:208,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} }
+        { text:'等待处理', subtext:'请求数 / requests', left:10,top:224,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} }
       ],
-      grid: [{left:46,right:18,top:56,height:116},{left:46,right:18,top:256,height:116}],
-      xAxis: [0,1].map(gridIndex => ({type:timeAxis.type,gridIndex,min:timeAxis.min,max:timeAxis.max,minInterval:timeAxis.relative?1:undefined,splitNumber:ref.current!.clientWidth<500?3:5,axisLine:{lineStyle:{color:'#e5e9f0'}},axisTick:{show:false},axisLabel:{color:'#8b95a7',fontSize:10,formatter:timeAxis.format,hideOverlap:true,showMinLabel:timeAxis.relative?true:undefined},axisPointer:{label:{formatter:(params:{value:number})=>timeAxis.format(params.value)}},splitLine:{show:false}})),
+      // 两行日期/时间标签需要额外空间：两图之间留白，底部保留 52px，避免被回放区间遮挡。
+      grid: [{left:46,right:18,top:56,height:116},{left:46,right:18,top:272,bottom:52}],
+      xAxis: [0,1].map(gridIndex => ({type:timeAxis.type,gridIndex,min:timeAxis.min,max:timeAxis.max,minInterval:timeAxis.relative?1:undefined,splitNumber:ref.current!.clientWidth<500?3:5,axisLine:{lineStyle:{color:'#e5e9f0'}},axisTick:{show:false},axisLabel:{color:'#8b95a7',fontSize:10,lineHeight:14,margin:10,formatter:timeAxis.format,hideOverlap:true,showMinLabel:timeAxis.relative?true:undefined},axisPointer:{label:{formatter:(params:{value:number})=>timeAxis.format(params.value)}},splitLine:{show:false}})),
       yAxis: [0,1].map(gridIndex => ({type:'value',gridIndex,min:0,max,splitNumber:3,minInterval:1,axisLabel:{color:'#8b95a7',fontSize:10},splitLine:{lineStyle:{color:'#edf0f5',type:'dashed'}},axisLine:{show:false}})),
       axisPointer: { link:[{xAxisIndex:'all'}] },
       tooltip: {
