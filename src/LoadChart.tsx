@@ -15,7 +15,7 @@ interface Props {
   data: LoadData; // matrix 适配结果，演示模式也生成相同结构。
   range: TimeRange; // 查询窗口，Unix 秒。
   selection?: TimeRange; // 父组件持有的选区，用于同步两条折线的阴影。
-  onSelect?: (range: TimeRange) => void; // 将拖拽区间回传 App.selection，不创建回放。
+  onSelect?: (range: TimeRange | undefined) => void; // undefined 同步清除选区，不创建回放。
   selectable?: boolean; // 历史窗口开启；回放窗口只观测。
   relativeOrigin?: number; // 实际 started_at，用于显示经过时间，单位仍为秒。
   max?: number;
@@ -33,6 +33,7 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
     chart.current = instance;
     const observer = new ResizeObserver(() => instance.resize()); observer.observe(ref.current!);
     const handler = (event: any) => {
+      if(event.areas?.length===0){callback.current?.(undefined);return;}
       const coords = event.areas?.[0]?.coordRange;
       if (!Array.isArray(coords) || coords.length !== 2) return;
       // 可刷选的历史图使用绝对时间轴：ECharts 毫秒 → API Unix 秒 → 排序/裁剪。
@@ -41,6 +42,8 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
       if (selected.end > selected.start) callback.current?.(selected);
     };
     instance.on('brushEnd', handler);
+    // 工具栏清除只发送 brush 事件；程序恢复选区的 brush 事件不触发回传。
+    instance.on('brush',(event: any)=>{if(event.command==='clear')callback.current?.(undefined);});
     return () => { observer.disconnect(); instance.dispose(); chart.current = undefined; };
   }, []);
   useEffect(() => {
@@ -65,7 +68,7 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
     instance.setOption({
       animation: false,
       textStyle: { fontFamily:'Inter, system-ui, sans-serif' },
-      toolbox: selectable ? {feature:{brush:{title:{rect:t('矩形选择'),polygon:t('圈选'),lineX:t('横向选择'),lineY:t('纵向选择'),keep:t('保持选择'),clear:t('清除选择')}}}} : undefined,
+      toolbox: selectable ? {feature:{brush:{type:['lineX','clear'],title:{lineX:t('横向选择'),clear:t('清除选择')}}}} : undefined,
       title: [
         { text:t('正在处理'), subtext:t('请求数 / requests'), left:10,top:8,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} },
         { text:t('等待处理'), subtext:t('请求数 / requests'), left:10,top:224,textStyle:{fontSize:12,fontWeight:500,color:'#586279'},subtextStyle:{fontSize:10,color:'#96a0b1'} }

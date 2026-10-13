@@ -24,7 +24,8 @@ const assert=require('assert');
       assert.equal(q,`sum by (model_name) (vllm:num_requests_${running?'running':'waiting'}{model_name="${metricsModel}"})`);
       // 后端原样返回 Prometheus 已求和的集群数据，不再携带 role/engine。
       body={status:'success',data:{resultType:'matrix',result:[{metric:{model_name:metricsModel},values:Array.from({length:61},(_,i)=>[start+(end-start)*i/60,String(running?20+i%12:7+i%5)])}]}};
-    }else if(url.pathname==='/api/replays'&&req.method()==='POST'){
+    }else if(url.pathname==='/api/replays/active')body={active:false,task:null};
+    else if(url.pathname==='/api/replays'&&req.method()==='POST'){
       submitted=req.postDataJSON();headerKey=req.headers()['idempotency-key'];
       body={replay_id:'backend-replay-1',status:'queued',request_count:42};
     }else if(url.pathname==='/api/replays/backend-replay-1')body={status:'running',started_at:started,request_count:42,sent_count:12,completed_count:9};
@@ -37,6 +38,9 @@ const assert=require('assert');
   assert.equal(await page.locator('#model option').count(),2,'same-name instances must merge');
   await page.locator('.metric-value.nan').waitFor();
   assert((await page.locator('.metric-value.nan').innerText()).includes('NaN'));
+  await page.getByRole('button',{name:'连接设置',exact:true}).click();
+  await page.locator('.settings-field input').fill('Bearer test-only');
+  await page.getByRole('button',{name:'应用设置',exact:true}).click();
   const checkTotalTooltip=async chart=>{
     const box=await chart.boundingBox();
     await page.mouse.move(box.x+box.width*.55,box.y+110);
@@ -51,7 +55,7 @@ const assert=require('assert');
   await page.mouse.move(box.x+box.width*.25,box.y+100);await page.mouse.down();await page.mouse.move(box.x+box.width*.7,box.y+100,{steps:8});await page.mouse.up();
   await page.getByRole('button',{name:'确认回放',exact:true}).click();await page.getByRole('button',{name:'开始回放',exact:true}).click();
   await page.getByText('回放中',{exact:true}).waitFor();
-  assert.deepEqual(Object.keys(submitted).sort(),['end_time','model_id','start_time']);
+  assert.deepEqual(Object.keys(submitted).sort(),['end_time','model_id','speed','start_time']);
   assert.equal(submitted.model_id,metricsModel);assert(submitted.end_time>submitted.start_time);assert(headerKey);
   await checkTotalTooltip(page.locator('.replay-panel .load-chart'));
   assert(promRequests<=10,'one model discovery, five latency cards, two history curves and two replay curves');

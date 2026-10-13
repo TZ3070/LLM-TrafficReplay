@@ -208,17 +208,18 @@ export function adaptModels(raw: unknown, metricsMap: Record<string, string> = {
   }
   return [...grouped.values()];
 }
-export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization' }
+export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay' }
 export class ApiError extends Error {
-  constructor(message: string, public status: number) { super(message); }
+  constructor(message: string, public status: number, public payload?: any, public retryAfterMs?: number) { super(message); }
 }
 // 以完整 URL（包含 query/start/end/step）缓存 30s，也复用正在进行的同一请求。
 // 只缓存无需认证的 Prometheus GET；回放 POST 和携带凭据的模型查询不进入此缓存。
 const promCache = new Map<string, { promise: Promise<any>; expires: number }>();
-// LiteLLM 与 Prometheus 共享后端限流；任一接口返回 429 后，本页 /api 请求共同退避。
-let rateLimitUntil = 0;
+// 指标与回放分别退避，避免指标后端限流阻止 Benchmark 的查询或取消。
+const rateLimitUntil = new Map<string,number>();
 export function request(path: string, options: RequestInit = {}, auth?: ClientOptions): Promise<any> {
-  if(Date.now() < rateLimitUntil && path.startsWith('/api/')) return Promise.reject(new ApiError('请求限流，正在等待 60 秒后恢复', 429));
+  const until=rateLimitUntil.get(auth?.service || 'metrics') || 0;
+  if(Date.now() < until) return Promise.reject(new ApiError('请求限流，正在等待后恢复', 429,undefined,until-Date.now()));
   return performRequest(path,options,auth);
 }
 // 由指标入口显式使用缓存，改路由前缀后仍保持 30s 去重，不依赖某一种拼写。
@@ -241,13 +242,16 @@ async function performRequest(path: string, options: RequestInit = {}, auth?: Cl
     if (auth?.apiKey) headers.set(auth.authHeader ?? 'x-litellm-key', auth.apiKey);
     // 相对路径走同源服务：开发/预览由 Vite 代理，生产由静态服务的反向代理转发。
     const response = await fetch(path, { ...options, headers, signal: controller.signal });
-    if(response.status===429)rateLimitUntil=Date.now()+60000;
+    const retryHeader=response.headers.get('Retry-After');
+    const retrySeconds=retryHeader !== null && retryHeader.trim() !== '' ? Number(retryHeader) : NaN;
+    const retryAfterMs=retryHeader === null ? 60000 : Math.max(1000,Number.isFinite(retrySeconds)?retrySeconds*1000:Date.parse(retryHeader)-Date.now() || 60000);
+    if(response.status===429)rateLimitUntil.set(auth?.service || 'metrics',Date.now()+retryAfterMs);
     const raw = await response.text();
     let result;
     // 错误只展示路由，不输出查询串或认证头，便于定位后端不存在的接口。
     const route = path.split('?')[0];
     try { result = JSON.parse(raw); } catch { throw new ApiError(`HTTP ${response.status} · ${route} · 后端返回非 JSON 响应，请检查代理配置`, response.status); }
-    if (!response.ok) throw new ApiError([`HTTP ${response.status}`, route, result?.error, result?.details].filter(Boolean).join(' · '), response.status);
+    if (!response.ok) throw new ApiError([`HTTP ${response.status}`, route, result?.error, result?.details].filter(Boolean).join(' · '), response.status,result,response.status===429?retryAfterMs:undefined);
     return result;
   } finally { clearTimeout(timeout); }
 }
@@ -267,8 +271,22 @@ export async function fetchLoad(modelName: string, range: TimeRange, labels?: La
   // 单条曲线失败时保留另一条的成功结果，错误信息交给页面展示。
   const results = await Promise.allSettled(keys.map(async key => parseMatrix(await requestPrometheus(promPath(queries[key], range, config)))));
   const data: LoadData = { running: [], waiting: [], errors: [] };
-  results.forEach((r, i) => { if (r.status === 'fulfilled') data[keys[i]] = r.value; else { data.errors.push(`${keys[i]}：${r.reason.message}`); console.warn(r.reason); } });
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') data[keys[i]] = r.value;
+    else {
+      (data.failedQueries ??= []).push(keys[i]);
+      data.errors.push(`${keys[i]}：${r.reason.message}`);console.warn(r.reason);
+    }
+  });
   return data;
+}
+/** 保留失败查询的旧数据，成功查询（包括空结果）始终采用最新响应。 */
+export function retainFailedLoad(previous: LoadData, next: LoadData): LoadData {
+  return {
+    ...next,
+    running: next.failedQueries?.includes('running') ? previous.running : next.running,
+    waiting: next.failedQueries?.includes('waiting') ? previous.waiting : next.waiting,
+  };
 }
 /** 即时 query → 页面底部卡片；这些值不是历史选区的汇总结果。 */
 export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {

@@ -1,0 +1,2 @@
+# Unified diffs use a single space to mark an empty context line.
+/integration/benchmark-replay.patch whitespace=-blank-at-eol

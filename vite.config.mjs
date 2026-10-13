@@ -4,8 +4,11 @@ import { minify } from 'terser';
 
 // 更具体的回放路径先匹配；未配置独立地址时仍走已有看板后端。
 export function createBackendProxy(env) {
-  const proxyOptions = (address) => {
+  if(env.VITE_REPLAY_AUTH_MODE==='proxy' && !env.BENCHMARK_API_KEY?.trim())throw new Error('代理认证模式需要配置服务端 BENCHMARK_API_KEY');
+  const proxyOptions = (address,replay=false) => {
     const options = { target:address, changeOrigin:true };
+    // 只给回放代理注入密钥；非 VITE_ 配置不会进入浏览器产物。
+    if(replay && env.VITE_REPLAY_AUTH_MODE==='proxy')options.headers={Authorization:`Bearer ${env.BENCHMARK_API_KEY.trim()}`};
     if(env.BACKEND_PROXY_DEBUG==='true') {
       const target = new URL(address);
       const destination = target.origin + target.pathname.replace(/\/$/,'');
@@ -19,14 +22,17 @@ export function createBackendProxy(env) {
     return options;
   };
   const proxy = {};
-  if(env.REPLAY_BACKEND_URL) {
+  const replayAddress=env.REPLAY_BACKEND_URL || env.BACKEND_URL;
+  if(replayAddress) {
     const create = env.VITE_REPLAY_CREATE_PATH || '/api/replays';
     const status = env.VITE_REPLAY_STATUS_PATH || '/api/replays/{id}';
-    const prefixes = new Set([create,status.split('{id}')[0].replace(/\/+$/,'')]);
+    const active = env.VITE_REPLAY_ACTIVE_PATH || '/api/replays/active';
+    const cancel = env.VITE_REPLAY_CANCEL_PATH || '/api/replays/{id}/cancel';
+    const prefixes = new Set([create,status.split('{id}')[0].replace(/\/+$/,''),active,cancel.split('{id}')[0].replace(/\/+$/,'')]);
     for(const prefix of prefixes) {
       if(!prefix.startsWith('/api/')||/[?#\s\\]/.test(prefix))throw new Error('回放代理路径应以 /api/ 开头，不含查询参数或空格');
       const match = '^' + prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '(?:$|[/?])';
-      proxy[match] = proxyOptions(env.REPLAY_BACKEND_URL);
+      proxy[match] = proxyOptions(replayAddress,true);
     }
   }
   if(env.BACKEND_URL) {

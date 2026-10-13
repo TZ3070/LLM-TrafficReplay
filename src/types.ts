@@ -17,15 +17,21 @@ export interface LoadData {
   running: Series[];
   waiting: Series[];
   errors: string[];
+  failedQueries?: ('running' | 'waiting')[]; // 只对失败查询保留最近成功曲线，成功空结果仍为空。
 }
 /** 创建响应与状态接口映射到此类型；与当前下拉框状态独立。 */
 export interface Replay {
   id: string; // 后端 replay_id，供 GET /api/replays/{id} 轮询。
   modelId: string; // 创建任务时固定的逻辑模型，不随用户切换下拉框变化。
+  sourceModelId?: string;
   modelName: string;
   metricsName: string;
   source: TimeRange; // 创建任务时复制的历史选区，用于查询原始请求档案。
   status: 'queued' | 'preparing' | 'running' | 'draining' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
+  speed?: number;
+  cancellable?: boolean;
+  cancelRequestedAt?: number;
+  revision?: number;
   startedAt?: number; // 后端 started_at：实际开始打流的 Unix 秒，不是按钮点击时间。
   finishedAt?: number; // 后端 finished_at：全部请求处理完成时间，不仅是发送完毕。
   metricsLabels?: Record<string, string>; // target.metrics_labels：定位本次回放部署的指标。

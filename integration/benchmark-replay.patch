@@ -1,0 +1,198 @@
+diff --git a/.env.example b/.env.example
+index f4d23a0..ee5f791 100644
+--- a/.env.example
++++ b/.env.example
+@@ -33,3 +33,6 @@ BENCHMARK_STATE_DB=./data/benchmark-state/benchmark.sqlite3
+ # Docker Compose only: persistent host directory for the task database.
+ BENCHMARK_STATE_HOST=./data/benchmark-state
+ SPENDLOGS_ARCHIVE_HOST=/srv/litellm/data/spendlogs
++
++# Optional mapping: LiteLLM alias -> real Prometheus model_name.
++BENCHMARK_MODEL_METRICS_MAP='{}'
+diff --git a/README.md b/README.md
+index ccf9652..fefa9f2 100644
+--- a/README.md
++++ b/README.md
+@@ -170,3 +170,15 @@ Docker Compose 用 `.env` 中的 `SPENDLOGS_ARCHIVE_HOST` 将服务器目录只
+ 可从 `proxy_server_request`、`request_body`、`request`、`body`、`messages` 或文本 `prompt` 读取请求内容。无时区的 LiteLLM `startTime` 按 UTC 解释。回放保留已保存的模型参数（如 `temperature`、`top_p`、`max_tokens`），只替换目标模型；历史凭证、内部字段和 metadata 不会转发。`call_type=anthropic_messages` 使用 `/v1/messages`，`acompletion` 等 Chat Completions 类型使用 `/v1/chat/completions`。
+ 
+ 回放会根据所选模型与 `[start,end)` 时间范围筛选记录，合并数据库和归档后按 `request_id` 单键去重，并按原始相对间隔发出请求。Anthropic Messages endpoint 优先根据请求体顶层的 `system`、`thinking`、`context_management` 字段判断，再参考 `call_type`。每个服务实例同时只允许一个活动回放任务。
++
++### 刷新恢复与轻量任务状态
++
++任务公共响应包含 `speed`、`revision`、`cancellable` 和实际指标标签，创建、状态、活动任务及取消响应使用同一结构。`revision` 随持久化更新增加，用于前端拒绝迟到的旧响应。
++
++前端轮询可使用 `GET /api/replays/{id}?view=status` 和 `GET /api/replays/active?view=status`，省略逐请求 `results`；未指定 `view=status` 的原接口仍返回完整结果。倍速只改变历史请求发送间隔，不缩短推理处理时间。
++
++LiteLLM 别名与 vLLM 标签不同时，可选配置 `BENCHMARK_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B"}'`，默认空映射。新任务固定保存解析后的标签；无需使用 `/api/series` 或新增 Prometheus 接口。
++
++取消受理与线程池请求提交共用锁，取消受理后不再提交新请求；已经提交的请求继续等待处理结束。状态不会从 `cancelling` 回退到运行，也不会从终态重新变成活动状态。
++
++浏览器刷新应通过活动接口或保存的任务 ID 恢复观测，并重新查询已有指标，不重新打流。Benchmark 进程重启仍将活动任务标记失败，不支持断点续跑。
+diff --git a/app/benchmark/api.py b/app/benchmark/api.py
+index 2b59b5a..2108fbc 100644
+--- a/app/benchmark/api.py
++++ b/app/benchmark/api.py
+@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
+ 
+ from .core import (
+     BENCHMARK_API_KEY,
++    MODEL_METRICS_MAP,
+     Job,
+     PrometheusConfigurationError,
+     cancel_events,
+@@ -70,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
+         return path not in {"/api/models", "/api/time-range"}
+ 
+     @staticmethod
+-    def public_job(job: Job) -> dict[str, Any]:
++    def public_job(job: Job, include_results: bool = True) -> dict[str, Any]:
+         total = job.get("request_count")
+         sent = int(job.get("sent_count", 0))
+         completed = int(job.get("completed_count", 0))
+@@ -89,6 +90,8 @@ class Handler(BaseHTTPRequestHandler):
+             "replay_id": job["run_id"],
+             "status": job["status"],
+             "cancellable": job["status"] in CANCELLABLE_STATUSES,
++            "speed": job.get("speed", 1.0),
++            "revision": job.get("revision", 0),
+             "model_id": job.get("target_model"),
+             "source_model": job.get("source_model"),
+             "target_model": job.get("target_model"),
+@@ -109,10 +112,11 @@ class Handler(BaseHTTPRequestHandler):
+                 "percent": progress_percent,
+                 "sent_percent": sent_percent,
+             },
+-            "results": list(job.get("results", [])),
+             "warnings": list(job.get("warnings", [])),
+-            "target": {"metrics_labels": {"model_name": job["target_model"]}},
++            "target": {"metrics_labels": job.get("metrics_labels") or {"model_name": MODEL_METRICS_MAP.get(job["target_model"], job["target_model"])}},
+         }
++        if include_results:
++            result["results"] = list(job.get("results", []))
+         if job.get("request_count") is not None:
+             result["request_count"] = job["request_count"]
+         if job.get("started_at") is not None:
+@@ -147,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
+                     )
+                 self.send_json(200, {
+                     "active": active_job is not None,
+-                    "task": self.public_job(active_job) if active_job is not None else None,
++                    "task": self.public_job(active_job, include_results=params.get("view", [""])[0] != "status") if active_job is not None else None,
+                 })
+             elif parsed.path == "/api/preview":
+                 model = params.get("model", [""])[0]
+@@ -172,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
+                 with jobs_lock:
+                     job = jobs.get(run_id)
+                     snapshot = dict(job) if job is not None else None
+-                self.send_json(200, self.public_job(snapshot)) if snapshot is not None else self.send_json(404, {"error": "replay not found"})
++                self.send_json(200, self.public_job(snapshot, include_results=params.get("view", [""])[0] != "status")) if snapshot is not None else self.send_json(404, {"error": "replay not found"})
+             else:
+                 self.send_json(404, {"error": "not found"})
+         except PrometheusConfigurationError as exc:
+@@ -269,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
+                 "start": start.timestamp(),
+                 "end": end.timestamp(),
+                 "speed": speed,
++                "revision": 0,
++                "metrics_labels": {"model_name": MODEL_METRICS_MAP.get(target_model, target_model)},
+                 "request_count": None,
+                 "sent_count": 0,
+                 "completed_count": 0,
+diff --git a/app/benchmark/core.py b/app/benchmark/core.py
+index 2319a2e..0d27b8e 100644
+--- a/app/benchmark/core.py
++++ b/app/benchmark/core.py
+@@ -52,6 +52,13 @@ HOST = required_env("BENCHMARK_HOST")
+ MAX_WORKERS = max(1, int(required_env("BENCHMARK_MAX_WORKERS")))
+ RESPONSE_READ_TIMEOUT = max(1.0, float(required_env("BENCHMARK_RESPONSE_READ_TIMEOUT")))
+ STATE_DB_PATH = os.path.abspath(os.path.expanduser(required_env("BENCHMARK_STATE_DB")))
++# Optional mapping from LiteLLM aliases to the real Prometheus model_name.
++MODEL_METRICS_MAP = json.loads(os.environ.get("BENCHMARK_MODEL_METRICS_MAP", "{}") or "{}")
++if not isinstance(MODEL_METRICS_MAP, dict) or any(
++    not isinstance(k, str) or not k.strip() or not isinstance(v, str) or not v.strip()
++    for k, v in MODEL_METRICS_MAP.items()
++):
++    raise RuntimeError("BENCHMARK_MODEL_METRICS_MAP must map model aliases to metric names")
+ logger = logging.getLogger(__name__)
+ 
+ jobs: dict[str, Job] = {}
+@@ -69,6 +76,7 @@ def open_state_db() -> sqlite3.Connection:
+ 
+ 
+ def save_job(job: Job) -> None:
++    job["revision"] = int(job.get("revision", 0)) + 1
+     serialized = json.dumps(job, ensure_ascii=False, separators=(",", ":"))
+     with closing(open_state_db()) as connection:
+         connection.execute(
+@@ -96,6 +104,7 @@ def initialize_state_db() -> None:
+                     status="failed",
+                     error="Service restarted while replay was active; the task was not resumed",
+                     finished_at=now,
++                    revision=int(job.get("revision", 0)) + 1,
+                 )
+                 connection.execute(
+                     "UPDATE replay_jobs SET status = ?, job_json = ?, updated_at = ? WHERE run_id = ?",
+@@ -664,6 +673,13 @@ def update_job(run_id: str, **values: Any) -> None:
+     with jobs_lock:
+         job = jobs.get(run_id)
+         if job is not None:
++            if job.get("status") in {"succeeded", "failed", "cancelled"}:
++                return
++            if job.get("status") == "cancelling":
++                if values.get("status") in {"preparing", "queued", "running", "draining"}:
++                    values.pop("status")
++                elif values.get("status") == "succeeded":
++                    values["status"] = "cancelled"
+             job.update(values)
+             save_job(job)
+ 
+@@ -901,19 +917,22 @@ def run_replay(
+                     break
+                 if cancel_event.is_set():
+                     break
+-                if not dispatch_started:
+-                    dispatch_started = True
+-                    dispatch_epoch = time.time()
+-                    update_job(
+-                        run_id,
+-                        status="running",
+-                        started_at=dispatch_epoch,
+-                    )
+-                assert dispatch_epoch is not None
+-                planned = datetime.fromtimestamp(dispatch_epoch + offset, timezone.utc)
+-                increment_sent(run_id)
+-                futures.append(executor.submit(send_one, record, body, endpoint, planned))
+-                update_job(run_id, last_scheduled_at=planned.timestamp())
++                # Cancellation and submission share the same lock: once cancellation
++                # is accepted, no further request can be submitted to the executor.
++                with jobs_lock:
++                    if cancel_event.is_set():
++                        break
++                    job = jobs[run_id]
++                    if not dispatch_started:
++                        dispatch_started = True
++                        dispatch_epoch = time.time()
++                        job.update(status="running", started_at=dispatch_epoch)
++                    assert dispatch_epoch is not None
++                    planned = datetime.fromtimestamp(dispatch_epoch + offset, timezone.utc)
++                    futures.append(executor.submit(send_one, record, body, endpoint, planned))
++                    job["sent_count"] += 1
++                    job["last_scheduled_at"] = planned.timestamp()
++                    save_job(job)
+             if not cancel_event.is_set():
+                 update_job(run_id, status="draining", dispatch_finished=True)
+             else:
+diff --git a/compose.server.yaml b/compose.server.yaml
+index 2fe303c..01c940a 100644
+--- a/compose.server.yaml
++++ b/compose.server.yaml
+@@ -30,6 +30,7 @@ services:
+       BENCHMARK_MAX_WORKERS: ${BENCHMARK_MAX_WORKERS:-128}
+       BENCHMARK_RESPONSE_READ_TIMEOUT: ${BENCHMARK_RESPONSE_READ_TIMEOUT:-600}
+       BENCHMARK_STATE_DB: /data/state/benchmark.sqlite3
++      BENCHMARK_MODEL_METRICS_MAP: ${BENCHMARK_MODEL_METRICS_MAP:-}
+     volumes:
+       # Historical SpendLogs snapshots are read-only input to replay.
+       - ${SPENDLOGS_ARCHIVE_HOST:-./data/spendlogs}:/data/spendlogs:ro

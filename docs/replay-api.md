@@ -4,38 +4,41 @@
 
 ## 1. 功能与接口范围
 
-用户选择一个模型，在历史处理/等待曲线中拖选区间，再确认回放。前端只提交模型、历史开始时间、历史结束时间。后端查询完整请求档案，按照原始请求间隔，将这段流量重新发送给该模型当前优化后的部署。
+用户选择一个模型，在历史处理/等待曲线中拖选区间，再确认回放。前端提交模型、历史开始时间、历史结束时间及倍速。后端查询完整请求档案，按照原始请求间隔除以倍速，将这段流量重新发送给该模型当前优化后的部署。
 
 创建任务采用异步方式：接口返回任务 ID，后台继续检索、调度和发送请求。前端通过状态接口获取实际打流时间，再使用已有 Prometheus 接口查询回放后的曲线。
 
 | 接口 | 方法 | 用途 | 对接范围 |
 | --- | --- | --- | --- |
 | `/api/replays` | POST | 创建回放任务，返回任务 ID | Benchmark 提供 |
+| `/api/replays/active?view=status` | GET | 恢复当前活动任务 | Benchmark 提供 |
+| `/api/replays/{id}/cancel` | POST | 请求取消任务 | Benchmark 提供 |
 | `/api/replays/{id}` | GET | 查询状态、计数、实际开始/结束时间、目标指标标签 | Benchmark 提供 |
 | `/api/prometheus/query_range` | GET | 查询历史及回放后的处理/等待曲线 | 使用已有接口 |
 | `/api/prometheus/query` | GET | 模型发现及五项即时延迟查询 | 使用已有接口 |
 
-当前前端没有取消任务、任务列表、重新加载页面后恢复任务的接口调用。状态中支持 `cancelled`，但页面没有取消按钮。
+前端已支持倍速、活动任务恢复、进度、取消及刷新后的曲线重建；没有完整任务列表。手动认证刷新后重新输入密钥即可恢复，服务端代理认证模式可自动恢复。
 
 ```mermaid
 sequenceDiagram
     participant F as 前端
-    participant B as 看板后端
+    participant B as Benchmark 回放后端
+    participant Q as 已有看板后端
     participant A as 请求档案
     participant M as 同模型优化后的部署
     participant P as Prometheus
     F->>B: POST /api/replays（模型、历史开始/结束时间）
     B-->>F: 202（replay_id、queued）
     B->>A: 按模型和历史时间检索完整请求
-    B->>M: 按原始时间间隔发送请求
+    B->>M: 按原始时间间隔按所选倍速发送请求
     M-->>B: 推理响应/流式响应结束
     P->>M: 周期采集 /metrics
     F->>B: GET /api/replays/{id}
     B-->>F: 状态、实际时间、计数、目标标签
-    F->>B: GET /api/prometheus/query_range
-    B->>P: /api/v1/query_range
-    P-->>B: 原样 matrix JSON
-    B-->>F: 原样 matrix JSON
+    F->>Q: GET /api/prometheus/query_range
+    Q->>P: /api/v1/query_range
+    P-->>Q: 原样 matrix JSON
+    Q-->>F: 原样 matrix JSON
 ```
 
 ## 2. 公共约定
@@ -87,7 +90,8 @@ POST /api/replays
 {
   "model_id": "DeepSeek-R1",
   "start_time": 1791770400,
-  "end_time": 1791771000
+  "end_time": 1791771000,
+  "speed": 1
 }
 ```
 
@@ -96,8 +100,9 @@ POST /api/replays
 | `model_id` | string | 是 | 所选逻辑模型；默认就是下拉框中的 Prometheus `model_name`，配置映射时为回放别名 |
 | `start_time` | number | 是 | 历史区间开始，Unix 整数秒 |
 | `end_time` | number | 是 | 历史区间结束，Unix 整数秒，必须大于开始 |
+| `speed` | number | 前端始终发送 | 有限正数；控件提供 0.5、1、2、5、10，默认 1 |
 
-当前前端只发送这三个字段，不发送目标 IP、部署实例、回放速度或完整请求内容。默认语义为“同模型当前部署、原速回放”。后端必须将逻辑模型解析为优化后的目标路由，并在任务创建时保存目标快照，避免任务运行期间配置变化导致打流目标漂移。
+当前前端发送这四个字段，不发送目标 IP、部署实例或完整请求内容。倍速只缩放发送间隔，不修改推理耗时；1× 表示原速。后端必须将逻辑模型解析为优化后的目标路由，并在任务创建时保存目标快照，避免任务运行期间配置变化导致打流目标漂移。
 
 ### 3.2 响应
 
@@ -106,7 +111,15 @@ POST /api/replays
 ```json
 {
   "replay_id": "replay-20261012-0001",
+  "model_id": "DeepSeek-R1",
+  "source_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1",
+  "start_time": 1791770400,
+  "end_time": 1791771000,
+  "speed": 1,
   "status": "queued",
+  "cancellable": true,
+  "revision": 1,
   "target": {
     "metrics_labels": {
       "model_name": "DeepSeek-R1",
@@ -118,6 +131,9 @@ POST /api/replays
 
 | 字段 | 类型 | 对接要求 | 含义 |
 | --- | --- | --- | --- |
+| `speed` | number | 返回创建时固定倍速 | 有限正数，恢复时不依赖控件当前值 |
+| `cancellable` | boolean | 返回是否可取消 | cancelling 和终态为 false |
+| `revision` | number | 推荐返回递增版本 | 拒绝迟到的旧快照 |
 | `replay_id` | string | 必须返回非空任务 ID | 后续状态 GET 的路径参数；不能改名为 `id` 或 `task_id` |
 | `status` | string | 应返回 | 使用第 5 节中的固定英文状态；通常是 `queued` 或 `preparing` |
 | `started_at` | number | 实际发送开始后才返回 | 第一个回放请求实际发出的时间，Unix 秒 |
@@ -128,14 +144,14 @@ POST /api/replays
 
 ### 3.3 幂等语义
 
-前端在相同模型与时间条件的创建失败后重试时复用 `Idempotency-Key`。创建成功后再次进行回放会生成新键。
+前端在相同模型、时间与倍速条件的创建失败后重试时复用 `Idempotency-Key`。创建成功后再次进行回放会生成新键。
 
 后端需要实现以下行为，不能仅接收请求头后忽略它：
 
 | 情况 | 后端行为 |
 | --- | --- |
-| 相同调用方、相同键、相同请求体 | 返回原任务 ID；不能再创建任务或再打一次流 |
-| 相同调用方、相同键、不同请求体 | 返回 `409 Conflict` |
+| 相同键、相同有效参数 | 返回原任务 ID；不能再创建任务或再打一次流 |
+| 相同键、不同有效参数 | 返回 `409 Conflict` |
 | 不同键、相同请求体 | 可以作为新的实验创建任务，受后端并发策略约束 |
 
 幂等记录、任务创建和调度入队要避免并发重复；可采用数据库唯一约束和事务/可靠队列。幂等记录应覆盖客户端重试期及任务运行期，不能沿用 30 秒指标缓存 TTL。
@@ -157,7 +173,15 @@ GET /api/replays/replay-20261012-0001
 ```json
 {
   "replay_id": "replay-20261012-0001",
+  "model_id": "DeepSeek-R1",
+  "source_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1",
+  "start_time": 1791770400,
+  "end_time": 1791771000,
+  "speed": 1,
   "status": "running",
+  "cancellable": true,
+  "revision": 24,
   "started_at": 1791774000,
   "request_count": 1200,
   "sent_count": 600,
@@ -176,7 +200,15 @@ GET /api/replays/replay-20261012-0001
 ```json
 {
   "replay_id": "replay-20261012-0001",
+  "model_id": "DeepSeek-R1",
+  "source_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1",
+  "start_time": 1791770400,
+  "end_time": 1791771000,
+  "speed": 1,
   "status": "succeeded",
+  "cancellable": false,
+  "revision": 60,
   "started_at": 1791774000,
   "finished_at": 1791774620,
   "request_count": 1200,
@@ -194,7 +226,11 @@ GET /api/replays/replay-20261012-0001
 | 字段 | 类型 | 对接要求 | 含义 |
 | --- | --- | --- | --- |
 | `status` | string | 每次必填 | 当前状态；未知状态会触发前端错误 |
-| `replay_id` | string | 建议返回 | 便于联调；当前前端使用请求路径中的 ID |
+| `replay_id` | string | 必须返回 | 创建、恢复和状态校验使用同一任务 ID |
+| `model_id` / `target_model` | string | 必须返回其一 | 固定目标模型 |
+| `source_model` | string | 推荐返回 | 原始请求来源模型，省略时回退目标模型 |
+| `start_time` / `end_time` | number | 必须返回 | 恢复原历史区间 |
+| `speed` / `cancellable` / `revision` | number / boolean / number | 与创建响应保持一致 | 固定倍速、取消能力及快照版本 |
 | `started_at` | number | 开始后每次返回 | 必须保持实际开始时间一致，不能在后续响应中省略 |
 | `finished_at` | number | 终态且工作已结束时返回 | 成功时为最后一个请求响应处理完毕的时间；失败/取消时为任务实际停止且在途请求已结束或被终止的时间 |
 | `request_count` | number | 确定后每次返回 | 纳入回放的总数 |
@@ -218,12 +254,12 @@ GET /api/replays/replay-20261012-0001
 | `preparing` | 准备请求 | 检索档案、核对路由、准备调度 |
 | `running` | 回放中 | 已开始发流，仍有请求尚未发送 |
 | `draining` | 等待处理完成 | 请求发送完毕，等待在途推理/流式响应结束 |
-| `cancelling` | 正在取消 | 等待已提交请求结束；前端继续查询，尚未增加取消按钮 |
+| `cancelling` | 正在取消 | 等待已提交请求结束；前端继续查询，取消按钮禁用 |
 | `succeeded` | 已完成 | 任务成功结束 |
 | `failed` | 失败 | 任务执行失败，执行工作已终止 |
 | `cancelled` | 已取消 | 任务被取消，执行工作已终止 |
 
-典型过程为 `queued → preparing → running → draining → succeeded`；失败和取消可从非终态进入。终态不能再退回运行状态。
+Benchmark 典型过程为 `preparing → queued → running → draining → succeeded`；失败和取消可从非终态进入。终态不能再退回运行状态。
 
 后端以档案中的原始请求到达时间计算调度偏移。例如历史区间 `[10:00:00, 10:10:00)` 内两个请求分别在 `10:00:05`、`10:00:08` 到达，应保留 3 秒间隔。建议以首个纳入回放的请求为调度零点：若首个请求实际于 `11:00:00` 发出，第二个应计划于 `11:00:03` 发出，`started_at` 就是 `11:00:00`。
 
@@ -268,7 +304,7 @@ VITE_MODEL_METRICS_MAP='{"deepseek-service":"DeepSeek-R1"}'
 
 ## 7. 前端如何获取回放曲线
 
-当前前端立即显示创建响应并发起一次状态查询，此后活动任务在上次请求完成后约 **2 秒**再次查询；同一任务不重叠发起状态请求。查询失败保留上次数据和更新时间，按 5/10/20/30 秒退避，429 退避 60 秒。页面隐藏时暂停，恢复前台后立即尝试刷新（仍遵守错误退避）。收到终态后停止状态查询，即使任务没有 `started_at`。
+当前前端立即显示创建响应并发起一次状态查询，此后活动任务在上次请求完成后约 **2 秒**再次查询；同一任务不重叠发起状态请求。查询失败保留上次数据和更新时间，按 5/10/20/30 秒退避，429 使用 Retry-After，缺省退避 60 秒。页面隐藏时暂停，恢复前台后立即尝试刷新（仍遵守错误退避）。收到终态后停止状态查询，即使任务没有 `started_at`。
 
 曲线刷新与状态查询分开执行。尚无 `started_at` 时不查询曲线，但已知总数会显示在进度区和图表占位区；总数未知显示正在统计，提前失败/取消显示结束原因。较慢的指标请求不阻塞任务进度更新。
 
@@ -333,24 +369,24 @@ step  = max(5, ceil((end - start) / 60))
 | 404 | 模型或任务不存在；需区别于接口路径不存在 |
 | 409 | 幂等键冲突，或触发后端设定的活动任务冲突策略 |
 | 422 | 档案已过期、超出回放范围或确实没有可回放请求 |
-| 429 | 超出请求/任务限流；当前前端收到后对 `/api` 请求退避 60 秒 |
+| 429 | 超出请求/任务限流；前端按服务及 Retry-After 分别退避，缺省 60 秒 |
 | 503 | 当前没有可用的目标路由或执行服务 |
 | 504 | 接口依赖服务超时；已受理任务后执行超时应通过任务状态返回 |
 | 500 | 接口自身无法正常处理 |
 
-业务任务失败仍允许状态接口返回 `200` 和 `status: "failed"`。HTTP 错误表示此次接口访问失败，与任务的执行状态是两件事。当前前端尚未依据 `Retry-After` 动态调整退避时间。
+业务任务失败仍允许状态接口返回 `200` 和 `status: "failed"`。HTTP 错误表示此次接口访问失败，与任务的执行状态是两件事。前端支持秒数或 HTTP 日期形式的 `Retry-After`，且回放与指标的限流退避相互独立。
 
 ## 9. 后端实现步骤
 
-1. 校验三个请求字段、调用权限、可回放范围和幂等键。
+1. 校验四个请求字段、调用权限、可回放范围和幂等键。
 2. 解析逻辑模型到历史档案筛选条件、当前优化部署路由及目标指标标签，固定到任务记录。
 3. 持久化任务与幂等关系，可靠入队，尽快返回 `202` 和任务 ID。
 4. 后台按档案原始请求时间检索 `[start_time, end_time)` 中的请求，确定 `request_count`。
-5. 并发调度，保留原始请求之间的到达间隔；首个请求发出时记录 `started_at`。
+5. 并发调度，将原始请求到达间隔除以 speed；首个请求发出时记录 `started_at`。
 6. 发送完毕转为 `draining`，收集响应结束/错误/超时结果并持续更新计数。
 7. 工作结束后记录终态和 `finished_at`；GET 始终返回任务的完整已知状态。
 
-前端一次只允许一个活动任务；这不等于后端已限制所有浏览器、用户或部署的任务并发，后端仍需按实验资源容量确定自己的并发策略。
+Benchmark 当前全服务只允许一个活动任务，没有用户隔离；其他后端实现也必须提供原子的活动任务约束。
 
 ## 10. 前端配置与联调
 
@@ -370,7 +406,7 @@ VITE_MODEL_METRICS_MAP='{}'
 联调顺序：
 
 1. 在页面切换“后端”，确认模型、历史曲线正常。
-2. 选取有请求档案的历史区间，确认创建 POST 只含三个字段，响应为直接 JSON 且包含 `replay_id`。
+2. 选取有请求档案的历史区间，确认创建 POST 包含 model_id/start_time/end_time/speed 四字段，响应为直接 JSON 且包含 `replay_id`。
 3. 验证状态从排队/准备进入运行，首个真实请求发送后才出现 `started_at`；核对模型确实为当前优化部署。
 4. 检查右侧两个 `query_range` 请求的起点为实际打流时间，而非历史 `start_time`，且目标标签能返回数据。
 5. 验证全部发出后不会提前完成；在途请求结束后才返回终态与 `finished_at`。
@@ -378,3 +414,30 @@ VITE_MODEL_METRICS_MAP='{}'
 7. 验证失败响应、空档案、认证失败、模型别名映射、终态后停止轮询，以及切换左侧模型不会改变正在观测任务。
 
 目前仓库的浏览器联调脚本使用模拟 HTTP 响应；真实后端、档案检索和原速打流仍需按上述步骤验证。
+
+
+## 11. 任务恢复、取消与刷新契约
+
+公共任务响应必须包含 replay_id、status、model_id 或 target_model、source_model、start_time、end_time；补充 speed、cancellable、revision、cancel_requested_at 和 target.metrics_labels。创建、状态、active.task、409.active_task、取消以及 409.task 使用同一任务结构。speed 是创建时固定值，revision 随持久化更新递增。
+
+活动查询返回 `{"active":true,"task":{...}}` 或 `{"active":false,"task":null}`。前端只在成功确认没有活动任务后才能新建；401/403/503、未知状态或不完整任务不能当作没有活动任务。
+
+状态与活动查询带 `?view=status`，后端省略全部逐请求 results；不带该参数的接口保持完整结果兼容。旧后端忽略参数也可用，但缺少 speed 时无法恢复真实倍速；前端不凭空显示 1×。任务标签应是实际 Prometheus 标签，LiteLLM 别名可通过后端 BENCHMARK_MODEL_METRICS_MAP 或前端 VITE_MODEL_METRICS_MAP 映射。
+
+刷新先查询 active；无活动任务时再 GET 保存的最后 replay_id，避免任务刚结束而丢失曲线。404 清除失效任务线索，其他失败保留快照并禁用创建。获得 started_at 后重新查询从该时间到现在的指标，再恢复约 2 秒状态和 30 秒曲线轮询。完成任务继续保留 finished_at+30 秒图表范围与 finished_at+60 秒采集余量。
+
+浏览器 localStorage 仅保存非敏感快照、历史窗口、相对时间偏好与数据源；sessionStorage 保存待确认创建请求的参数、签名和幂等键。成功取得任务 ID 后清除待确认记录；创建冲突附带 active_task 时展示该任务。网络失败或响应丢失时保留原操作，用户重试原请求，同键同有效参数返回 200 原任务；新任务返回 202。参数指纹包含 source_model、target_model、start_time、end_time、speed；同键不同有效参数返回 409。正在观测已知任务的刷新过程不 POST 创建。
+
+待确认操作只在后端模式显示和重试；演示任务不改写该记录。首次请求收到明确拒绝的 JSON 响应（400/401/403/404/405/413/415/422）时清除本次待确认记录，允许修正后以新键创建；5xx、超时和不可解析响应仍保留。已有未确认尝试时，本次重试被拒绝不能证明原尝试没有创建任务，继续保留原键。源模型等于目标模型时，历史恢复沿用任务的实际 model_name；源模型不同则使用源模型映射。回放曲线按查询分别保留失败前的数据，成功空响应会清空对应曲线。
+
+取消接口返回 202 和 cancelling 任务，重复取消仍 202；已终态返回 409 + task；不存在返回 404。cancellable=false 不启用取消按钮。取消不撤回已提交请求，必须继续查询直到终态；计数按实际进展显示，不把取消进度填为 100%。取消提交和调度提交由后端共用锁保护，取消受理后不再提交新请求。前端拒绝旧 revision 和取消前迟到的轮询响应，终态不能被非终态覆盖。
+
+## 12. 刷新认证方式
+
+manual（默认）：页面输入 `Bearer 实际BENCHMARK_API_KEY`，认证只在页面内存，刷新后重新输入并应用设置即恢复任务。
+
+proxy：设置 `VITE_REPLAY_AUTH_MODE=proxy` 和服务端 `BENCHMARK_API_KEY=原始密钥`，Vite 向创建/状态/active/cancel 路由注入 Bearer 头，浏览器不持有服务密钥。该密钥不使用 VITE_ 前缀，不进入构建产物。Vite 仅监听回环地址；生产必须由已有受控且有访问认证的反向代理提供相同路由注入，不能仅发布静态文件就期待此功能生效。
+
+`VITE_REPLAY_ACTIVE_PATH` / `VITE_REPLAY_CANCEL_PATH` 支持自定义同源路径，Vite 分流也同步覆盖这些路径。`VITE_REPLAY_STORAGE_SCOPE` 区分同域不同回放环境，切换环境时应修改后重建。Prometheus query/query_range 继续使用现有后端，不携带 Benchmark 凭据。
+
+浏览器刷新只是恢复观测；后端进程重启仍将活动任务标记 failed，不支持断点续跑。自动恢复不触发真实流量重放，完整结果也不缓存到浏览器。

@@ -1,6 +1,5 @@
 const fs = require('fs');
 const ts = require('typescript');
-const Module = require('module');
 const path = require('path');
 require.extensions['.ts'] = (module, filename) => {
   const source = fs.readFileSync(filename, 'utf8');

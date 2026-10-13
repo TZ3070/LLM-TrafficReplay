@@ -34,9 +34,10 @@ const assert = require('node:assert/strict');
         }
       } else {
         assert.equal(request.headers().authorization,'Bearer test-benchmark-key');
-        if(request.method()==='POST') {
+        if(url.pathname==='/api/replays/active') {response={active:false,task:null};}
+        else if(request.method()==='POST') {
           assert.equal(url.pathname,'/api/replays');
-          assert.deepEqual(Object.keys(request.postDataJSON()).sort(),['end_time','model_id','start_time']);
+          assert.deepEqual(Object.keys(request.postDataJSON()).sort(),['end_time','model_id','speed','start_time']);
           assert(request.headers()['idempotency-key']);
           status=202;response=creation;
         } else {

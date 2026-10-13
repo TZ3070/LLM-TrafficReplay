@@ -3,6 +3,23 @@ export type Language = 'zh' | 'en';
 const LANGUAGE_KEY = 'trafficReplay.language';
 
 const english: Record<string, string> = {
+  '任务历史区间': 'Task history range',
+  '回放倍速': 'Replay speed',
+  '倍速调整请求间隔，任务开始后保持不变。': 'Speed changes request intervals and stays fixed once the task starts.',
+  '{speed}× · 按历史间隔调度': '{speed}× · Historical request intervals',
+  '倍速未知': 'Speed unknown',
+  '正在恢复回放任务…': 'Restoring replay task…',
+  '重试恢复': 'Retry recovery',
+  '填写认证': 'Enter credentials',
+  '请先在连接设置中填写认证值，再恢复任务。': 'Enter credentials in Connection settings to restore the task.',
+  '有创建请求尚未确认结果；重试会复用原参数和幂等键。': 'A creation request has an unconfirmed outcome. Retry reuses its original parameters and idempotency key.',
+  '重试原创建请求': 'Retry original request',
+  '取消回放': 'Cancel replay',
+  '正在提交取消…': 'Requesting cancellation…',
+  '已提交的请求仍可能完成；取消期间继续更新进度。': 'Submitted requests may still finish. Progress keeps updating during cancellation.',
+  '将所选时间段的请求按所选倍速发送给该模型当前部署。': 'Send requests from the selected period to the current model deployment at the selected speed.',
+  '回放认证由同源服务端代理提供，刷新后自动恢复。': 'Replay authentication is provided by the same-origin server proxy. Tasks restore automatically after refresh.',
+  '模拟回放，时长随倍速调整；曲线不代表真实优化效果。': 'Simulated replay duration changes with speed. Curves do not represent measured optimization results.',
   'TrafficReplay / 大模型流量回放': 'TrafficReplay / LLM Traffic Replay',
   '演示数据': 'Demo data',
   '后端模式': 'Backend mode',
@@ -164,6 +181,14 @@ export function translate(language: Language, text: string, values: Record<strin
 
 // 数据层/后端错误保留原文存储，显示时翻译已知前端消息；不改写模型名或未知上游详情。
 const errorTranslations: Record<string, string> = {
+  '恢复回放失败：': 'Replay recovery failed: ',
+  '取消回放失败：': 'Replay cancellation failed: ',
+  '请先在连接设置中填写认证值，再恢复任务。': english['请先在连接设置中填写认证值，再恢复任务。'],
+  '存在结果待确认的创建请求，请先重试原请求。': 'A creation request has an unconfirmed outcome. Retry that request first.',
+  '活动任务响应格式无效': 'Invalid active task response',
+  '任务响应缺少有效模型或历史区间': 'Task response is missing a valid model or history range',
+  '回放任务 ID 不匹配': 'Replay task ID mismatch',
+  '请求限流，正在等待后恢复': 'Rate limited. Waiting before retrying.',
   '模型加载失败：': 'Model loading failed: ',
   '任务状态查询失败：': 'Task status query failed: ',
   '创建回放失败：': 'Replay creation failed: ',
