@@ -211,7 +211,37 @@ TypeScript 与生产构建通过；35 项解析、接口配置、缓存、模型
 
 创建前选择 0.5× / 1× / 2× / 5× / 10×，默认 1×。倍速缩放请求发送间隔，创建后的任务参数固定，不能运行中改速。状态返回 `speed`；旧后端未知倍速显示“倍速未知”，不默认显示原速。
 
-进入后端模式并有认证后，先查询 `/api/replays/active?view=status`；有活动任务则恢复，没有则用本地保存的最后 ID 查询终态任务，覆盖刷新期间刚完成的情况。恢复失败阻止创建，可手动重试。创建遇到 `409 + active_task` 时展示该任务。曲线重新查询 started_at 到现在的已有指标，然后继续正常刷新；恢复已知任务只 GET，不重新打流。
+进入后端模式并有认证后，先请求 `GET /api/replays/active?view=status`；有活动任务则恢复，没有则用本地保存的最后 ID 请求 `GET /api/replays/{replay_id}?view=status`，覆盖刷新期间刚完成的情况。恢复失败阻止创建，可手动重试。创建遇到 `409 + active_task` 时展示该任务。恢复已知任务只 GET，不重新打流，也不需要重新填写倍速或幂等键。
+
+页面刷新不会取消后端打流；曲线可能短暂为空，随后从实际开始时间重新查询并恢复已有曲线。正常情况下，任务状态和进度约每 2 秒更新，回放曲线每 30 秒更新；页面隐藏时暂停查询，重新可见时立即补查。演示模式的任务仅在当前页面运行，刷新后会重置。
+
+恢复任务和曲线所需的响应字段如下，均由后端返回，前端自动读取：
+
+| 字段 | 用途 |
+| --- | --- |
+| `replay_id`、`status` | 确认任务身份及状态，继续查询该任务进度。 |
+| `model_id` 或 `target_model`、`source_model` | 恢复目标及源模型；未返回 `source_model` 时前端按同一模型处理。 |
+| `start_time`、`end_time` | 原历史选区的 Unix 秒时间戳，用于恢复左侧历史窗口。 |
+| `started_at` | 实际打流开始时间，Unix 秒；回放曲线从此处开始，不使用原历史选区的起点。尚未实际开始时可以省略。 |
+| `target.metrics_labels` | 实际 Prometheus 模型和部署标签，优先用于筛选回放曲线；未提供时使用前端模型映射或模型名。 |
+| `progress.ready`、`progress.total`、`progress.completed` | 展示准备状态、“已完成 / 总请求”和进度条；兼容旧字段 `request_count`、`completed_count`。 |
+| `finished_at` | 任务结束时间，Unix 秒；用于确定尾部曲线范围和停止曲线轮询。 |
+
+两条回放曲线继续通过已有看板后端的 `GET /api/prometheus/query_range` 获取。每次分别查询处理和等待曲线，参数由前端自动生成：
+
+| 参数 | 取值 |
+| --- | --- |
+| `query` | 下方 PromQL；任务提供其他部署标签时，一并加入筛选条件。 |
+| `start` | 任务实际打流开始时间 `started_at`，Unix 秒。 |
+| `end` | 运行中为 `max(started_at + 30, 当前 Unix 秒)`；结束后为 `finished_at + 30`。 |
+| `step` | `max(5, ceil((end-start)/60))`，单位秒，约 60 个采样点。 |
+
+```promql
+sum by (model_name) (vllm:num_requests_running{model_name="实际指标模型名"})
+sum by (model_name) (vllm:num_requests_waiting{model_name="实际指标模型名"})
+```
+
+这里恢复的是从实际开始时间到当前查询终点的整段指标，而不是只查询刷新后的新点。任务结束后，前端在当前时间超过 `finished_at + 60` 且当轮两条查询均无错误时停止曲线轮询。曲线能否完整恢复取决于任务接口返回的时间和标签是否正确，以及 Prometheus 是否仍保留相应时段的数据；共享实例的指标也可能包含其他流量。完整任务响应契约见 [回放接口文档](docs/replay-api.md)。
 
 取消按钮仅在 `cancellable=true` 启用。`202` 进入 cancelling 后继续更新；`409 + task` 更新实际终态。旧轮询响应不能撤销取消或降低计数。已经提交给工作线程的请求仍可完成，进度不强制填满。
 
