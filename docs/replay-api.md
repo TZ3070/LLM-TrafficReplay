@@ -1,6 +1,6 @@
 # TrafficReplay 流量回放接口对接文档
 
-本文依据当前前端 `src/App.tsx`、`src/data.ts` 和 `src/types.ts` 编写。两个回放接口是前端已预留、需要看板后端实现的契约；文档不表示它们已在真实后端上线。本文只补充文档，不修改前端接口或回放逻辑。
+本文依据当前前端 `src/App.tsx`、`src/replay.ts`、`src/data.ts` 和 `src/types.ts` 编写。回放接口已适配独立 Benchmark 后端，指标接口使用已有看板后端；真实部署地址与认证仍需联调，文档不表示已连接真实服务。
 
 ## 1. 功能与接口范围
 
@@ -10,8 +10,8 @@
 
 | 接口 | 方法 | 用途 | 对接范围 |
 | --- | --- | --- | --- |
-| `/api/replays` | POST | 创建回放任务，返回任务 ID | 后端需要实现 |
-| `/api/replays/{id}` | GET | 查询状态、计数、实际开始/结束时间、目标指标标签 | 后端需要实现 |
+| `/api/replays` | POST | 创建回放任务，返回任务 ID | Benchmark 提供 |
+| `/api/replays/{id}` | GET | 查询状态、计数、实际开始/结束时间、目标指标标签 | Benchmark 提供 |
 | `/api/prometheus/query_range` | GET | 查询历史及回放后的处理/等待曲线 | 使用已有接口 |
 | `/api/prometheus/query` | GET | 模型发现及五项即时延迟查询 | 使用已有接口 |
 
@@ -68,6 +68,8 @@ Authorization: Bearer <TOKEN>
 ```
 
 或 `x-api-key: <KEY>`，或 `x-litellm-key: <KEY>`。页面只发送选中的一种；没有填写认证值则不发送。后端按自己的认证规则校验，并建立到 LiteLLM/vLLM 的调用权限。
+
+连接设置默认选择 `Authorization`。独立 Benchmark 仅接受 `Authorization: Bearer <BENCHMARK_API_KEY>`；认证值需手动填写 `Bearer ` 加服务端密钥实际值，不带尖括号，前端不会自动补前缀。LiteLLM Master Key 由 Benchmark 后端维护。
 
 Prometheus 查询不携带这些认证头。`Idempotency-Key` 只随创建 POST 发送。
 
@@ -202,9 +204,11 @@ GET /api/replays/replay-20261012-0001
 
 正常计数应满足 `0 <= completed_count <= sent_count <= request_count`，且已确定的计数不倒退。内部重试等额外诊断计数可另加字段，不要改变上述计数的语义。建议全部成功才使用 `succeeded`；部分失败时如何判定任务结果需要后端确定并保持一致。
 
-当前前端每次状态响应直接更新 `started_at`、`finished_at` 和三个计数，不支持仅返回变化字段的增量响应。`sent_count` 会被保存，但当前页面只显示“已完成 / 总请求”。时间/计数未知时应省略字段，不发送 `null` 或表示“未知”的 `0`；字段一旦已知，后续响应应继续返回。
+创建和状态响应使用同一个适配器。优先读取 `progress.total/completed/sent/skipped`，兼容顶层计数字段；`progress.ready=false`、`total=null` 表示还在准备。未知或省略的字段不清空已知数据，后端仍建议每次返回完整的已知快照。时间/计数未知时应省略顶层字段，不使用 `0` 表示未知。
 
-可补充 `error`、`failed_count` 等诊断字段，但当前前端尚未展示成功 HTTP 响应中的业务失败详情。返回 `200` 和 `status: "failed"` 会显示任务失败；如需同时展示具体失败原因，需要另外补前端字段解析与 UI。不要用 HTTP `500` 代替可正常读取的任务失败状态。
+模型名称下方显示完成数量、总数、进度条、百分比、发送数量、失败/跳过数量和最近成功接收时间。比例由 `completed / total` 计算；总数未知或为零时不显示百分比，也不强制以任务结束将进度填为 100%。
+
+前端展示 `failed_count`、`skipped_count` 和任务 `error`。返回 `200` 和 `status: "failed"` 会显示任务失败与具体原因；已完成数量包含失败请求，100% 不代表任务成功。不要用 HTTP `500` 代替可正常读取的任务失败状态。
 
 ## 5. 状态和执行规则
 
@@ -214,6 +218,7 @@ GET /api/replays/replay-20261012-0001
 | `preparing` | 准备请求 | 检索档案、核对路由、准备调度 |
 | `running` | 回放中 | 已开始发流，仍有请求尚未发送 |
 | `draining` | 等待处理完成 | 请求发送完毕，等待在途推理/流式响应结束 |
+| `cancelling` | 正在取消 | 等待已提交请求结束；前端继续查询，尚未增加取消按钮 |
 | `succeeded` | 已完成 | 任务成功结束 |
 | `failed` | 失败 | 任务执行失败，执行工作已终止 |
 | `cancelled` | 已取消 | 任务被取消，执行工作已终止 |
@@ -263,7 +268,9 @@ VITE_MODEL_METRICS_MAP='{"deepseek-service":"DeepSeek-R1"}'
 
 ## 7. 前端如何获取回放曲线
 
-当前前端立即发起一次状态查询，此后后端模式每 **30 秒**查询一轮。尚无 `started_at` 时只显示等待打流开始，不查询回放曲线。
+当前前端立即显示创建响应并发起一次状态查询，此后活动任务在上次请求完成后约 **2 秒**再次查询；同一任务不重叠发起状态请求。查询失败保留上次数据和更新时间，按 5/10/20/30 秒退避，429 退避 60 秒。页面隐藏时暂停，恢复前台后立即尝试刷新（仍遵守错误退避）。收到终态后停止状态查询，即使任务没有 `started_at`。
+
+曲线刷新与状态查询分开执行。尚无 `started_at` 时不查询曲线，但已知总数会显示在进度区和图表占位区；总数未知显示正在统计，提前失败/取消显示结束原因。较慢的指标请求不阻塞任务进度更新。
 
 收到实际开始时间后，以它作为固定起点，查询已有 `/api/prometheus/query_range`：
 
@@ -300,9 +307,9 @@ step  = max(5, ceil((end - start) / 60))
 
 如果后端缓存 `query_range`，缓存键必须包含 `query`、`start`、`end`、`step`。仅以 PromQL 为键会混淆同模型的历史窗口和回放窗口。当前前端自身按完整 URL 去重并缓存 30 秒。
 
-当前前端在有 `finished_at`、当前时间超过 `finished_at + 60`，且当轮两条指标查询没有错误时，停止该任务的状态/曲线轮询。这个条件只预留采集与缓存余量，不验证数据完整；空结果也可能满足停止条件。后端不能省略终态的 `finished_at`，否则页面仍会持续轮询。若实际采集/入库延迟超过该余量，需要另外调整前端策略。
+收到实际开始/结束时间时立即刷新一次曲线，运行时曲线独立每 30 秒刷新。前端在有 `finished_at`、当前时间超过 `finished_at + 60`，且当轮两条指标查询没有错误时，停止该任务的曲线轮询。这个条件只预留采集与缓存余量，不验证数据完整；空结果也可能满足停止条件。后端不能省略终态的 `finished_at`，否则曲线仍会持续轮询；状态查询已按终态独立停止。
 
-当前另有一个需要在联调中处理的边界：任务在首个请求发送前就失败/取消时，没有 `started_at`，前端会跳过曲线查询，也不会进入上述停止条件，仍继续状态轮询。后端应如实省略开始时间；若要彻底停止这种终态的轮询，需要补前端判断，不能伪造开始时间来绕过。
+任务在首个请求发送前就失败/取消时，后端应如实省略 `started_at`；前端停止状态查询且不创建曲线查询，不需要伪造开始时间。
 
 其他现有监测继续工作：延迟卡仍按左侧当前查询模型，通过五条即时 PromQL 获取；其回溯窗口跟随历史范围。它们没有自动限定到 `replay_id`、目标部署标签或任务实际区间，不能直接当作本次回放独立的优化前后延迟报告。右侧曲线若来自共享部署，也可能包含其他业务流量；只返回部署标签无法区分同部署中的回放流量。
 
@@ -351,13 +358,14 @@ step  = max(5, ceil((end - start) / 60))
 
 ```dotenv
 BACKEND_URL=http://<DASHBOARD_BACKEND_IP>:<DASHBOARD_BACKEND_PORT>
+REPLAY_BACKEND_URL=http://<BENCHMARK_IP>:<BENCHMARK_PORT>
 VITE_PROMETHEUS_API_PREFIX=/api/prometheus
 VITE_REPLAY_CREATE_PATH=/api/replays
 VITE_REPLAY_STATUS_PATH=/api/replays/{id}
 VITE_MODEL_METRICS_MAP='{}'
 ```
 
-修改配置后重新运行 `npm run dev`，它会重新构建并启动预览。静态生产部署需要重新构建，并让 Web 服务将完整 `/api` 路径转发到看板后端。使用同源代理无需浏览器跨域；若另行采用跨域部署，后端需允许前端 Origin、GET/POST/OPTIONS，以及 `Content-Type`、`Idempotency-Key` 和所用认证头。
+`REPLAY_BACKEND_URL` 可留空，此时回放仍走 `BACKEND_URL`。独立配置时，Vite 将创建/状态路径优先转发给 Benchmark（支持自定义回放路径），其余 `/api` 请求仍走已有看板后端。两个地址只配置代理，不进入浏览器产物。修改配置后重新运行 `npm run dev`。静态生产部署需在 Web 服务中配置相同的路径分流。使用同源代理无需浏览器跨域；若另行采用跨域部署，后端需允许前端 Origin、GET/POST/OPTIONS，以及 `Content-Type`、`Idempotency-Key` 和所用认证头。
 
 联调顺序：
 

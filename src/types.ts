@@ -25,14 +25,18 @@ export interface Replay {
   modelName: string;
   metricsName: string;
   source: TimeRange; // 创建任务时复制的历史选区，用于查询原始请求档案。
-  status: 'queued' | 'preparing' | 'running' | 'draining' | 'succeeded' | 'failed' | 'cancelled';
+  status: 'queued' | 'preparing' | 'running' | 'draining' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
   startedAt?: number; // 后端 started_at：实际开始打流的 Unix 秒，不是按钮点击时间。
   finishedAt?: number; // 后端 finished_at：全部请求处理完成时间，不仅是发送完毕。
   metricsLabels?: Record<string, string>; // target.metrics_labels：定位本次回放部署的指标。
   requestCount?: number;
   sentCount?: number;
   completedCount?: number;
+  failedCount?: number;
+  skippedCount?: number;
+  statusUpdatedAt?: number; // 最近一次成功接收创建/状态响应的 Unix 秒。
   statusError?: string;
+  taskError?: string;
 }
 // 即时指标：查询失败时仅填 error，成功空结果时 value 为 undefined；rows 用于按 role 分行的模型。
 export interface MetricRow { name: string; role?: string; value?: number }

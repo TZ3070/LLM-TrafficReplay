@@ -1,4 +1,28 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap');
+.replay-progress { margin:15px 19px 12px; }
+.replay-progress-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.replay-progress-heading>div { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+.replay-progress-heading>div>span { color:#788499; font-size:11px; }
+.replay-progress-count { color:#344159; font-family:'DM Mono',monospace; font-size:20px; font-weight:500; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.replay-progress-percent { color:#47546a; font-family:'DM Mono',monospace; font-size:13px; font-variant-numeric:tabular-nums; }
+.replay-progress-track { height:8px; margin-top:11px; overflow:hidden; border-radius:5px; background:#e9edf5; }
+.replay-progress-fill { height:100%; border-radius:5px; background:#6d78ec; transition:width .25s ease; }
+.replay-progress[data-status="succeeded"] .replay-progress-fill { background:#32a58c; }
+.replay-progress[data-status="failed"] .replay-progress-fill { background:#d05262; }
+.replay-progress[data-status="cancelled"] .replay-progress-fill { background:#929dad; }
+.replay-progress-track.indeterminate .replay-progress-fill { opacity:.45; animation:replay-pending 1.8s ease-in-out infinite; }
+.replay-progress-details { display:flex; justify-content:space-between; gap:7px 15px; flex-wrap:wrap; margin-top:9px; color:#788499; font-size:11px; }
+.replay-progress-details>div { display:flex; gap:7px 13px; flex-wrap:wrap; }
+.replay-progress-failed { color:#a54d5a; }
+.replay-progress-hint { margin:9px 0 0; color:#788499; font-size:11px; }
+.replay-progress-error { margin:9px 0 0; color:#a54d5a; font-size:11px; overflow-wrap:anywhere; }
+.replay-progress-error p { margin:6px 0 0; }
+.replay-progress-error summary { cursor:pointer; }
+.badge.failed { color:#a54d5a; background:#fff1f2; }
+.replay-panel .task-summary { grid-template-columns:repeat(2,1fr); }
+@keyframes replay-pending { from{transform:translateX(-100%)} to{transform:translateX(340%)} }
+@media (prefers-reduced-motion:reduce) { .replay-progress-fill{transition:none}.replay-progress-track.indeterminate .replay-progress-fill{animation:none} }
+@media (max-width:520px) { .replay-progress{margin:15px 12px 12px}.replay-progress-count{font-size:18px}.replay-progress-details{flex-direction:column}.replay-panel .task-summary{grid-template-columns:1fr} }
 :root { font-family: 'Manrope', system-ui, sans-serif; color: #1d2940; background:#f4f6fa; font-synthesis:none; text-rendering:optimizeLegibility; }
 * { letter-spacing:0!important; }
 .history-end input { height:34px; width:100%; border:1px solid #dfe4ed; border-radius:5px; background:#fbfcfe; color:#27344a; padding:0 8px; font-size:11px; }

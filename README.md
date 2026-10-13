@@ -44,7 +44,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 | src/chartTime.ts、src/time.ts | Unix 秒与图表坐标、相对时间、上海时间输入/显示之间的转换 |
 | vite.config.mjs | 本地同源请求到看板后端的代理 |
 
-演示模式使用 demoModels、固定卡片值和 demoLoad，不调用真实模型。demoLoad 一次生成整个窗口的模拟点；演示任务固定 45 秒完成、每 3 秒刷新，与历史选区时长无关。后端模式每 30 秒轮询，实际状态与时间均来自后端，没有 45 秒自动完成规则。
+演示模式使用 demoModels、固定卡片值和 demoLoad，不调用真实模型。demoLoad 一次生成整个窗口的模拟点；演示任务固定 45 秒完成、每 3 秒刷新，与历史选区时长无关。后端模式的任务状态约每 2 秒查询，指标曲线每 30 秒刷新；实际状态与时间均来自后端，没有 45 秒自动完成规则。
 
 ## 启动
 
@@ -109,13 +109,14 @@ cp .env.example .env.local
 
 ```dotenv
 BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>
+REPLAY_BACKEND_URL=http://<BENCHMARK_IP>:<BENCHMARK_PORT>
 VITE_PROMETHEUS_API_PREFIX=/api/prometheus
 VITE_MODEL_METRICS_MAP='{}'
 VITE_REPLAY_CREATE_PATH=/api/replays
 VITE_REPLAY_STATUS_PATH=/api/replays/{id}
 ```
 
-地址填写另一台电脑能访问的看板后端地址，不是 Prometheus、LiteLLM 或 vLLM 地址。后端位于其他机器时，不应填写 127.0.0.1。修改连接配置后重启 `npm run dev`。页面选择“后端”，先确认 Prometheus 模型列表与历史指标。只有需要认证的回放接口才在连接设置中填写所需认证头和值；模型列表和指标查询无需 LiteLLM 认证。
+`BACKEND_URL` 填写已有指标后端地址，`REPLAY_BACKEND_URL` 可选，填写独立 Benchmark 后端地址；留空时回放仍走 `BACKEND_URL`。地址不是 Prometheus、LiteLLM 或 vLLM 地址。后端位于其他机器时，不应填写 127.0.0.1。修改连接配置后重启 `npm run dev`。页面选择“后端”，先确认 Prometheus 模型列表与历史指标。连接设置默认选择 `Authorization`；接入 Benchmark 时，认证值填写 `Bearer ` 加服务端 `BENCHMARK_API_KEY` 的实际值，不带尖括号，页面不会自动补前缀。模型列表和指标查询不携带该凭据。
 
 后续同步源码：`git pull`、`npm ci`，然后重新启动。自己的 .env.local 不进入 Git，因此不会被其他电脑的连接配置替换。
 
@@ -123,7 +124,11 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 ## 后端连接
 
-将 `.env.example` 复制为 `.env.local`，配置 `BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>`，重启服务。页面选择“后端”即可查询 Prometheus 模型列表和指标；回放接口需要认证时在右上角设置中配置认证头和值。凭据只保存在内存中。生产部署通过反向代理将 `/api` 路由到看板后端。
+将 `.env.example` 复制为 `.env.local`，配置 `BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>`，重启服务。独立 Benchmark 可另外配置 `REPLAY_BACKEND_URL`；Vite 开发和预览会优先将创建/状态路径转发给 Benchmark，其余 `/api` 请求仍走已有看板后端，自定义回放路径也支持分流。回放认证值在右上角设置中输入，只保存在内存中。静态生产部署需在反向代理中配置相同的路径分流；这两个地址仅用于本地代理，不进入浏览器构建产物。
+
+任务创建响应会立即显示进度，活动任务在每次状态响应结束后约 2 秒再次查询；查询失败时保留上次计数和更新时间，并按 5、10、20、30 秒退避，429 退避 60 秒。页面隐藏时暂停，恢复前台后立即尝试刷新；终态立即停止状态轮询。右侧曲线独立每 30 秒刷新，较慢的指标查询不会阻塞进度。
+
+回放观测的模型名称下方显示“已完成 / 总请求”、百分比和进度条，以及已发送、失败、跳过数量与最近成功接收时间。计数优先读取 `progress.total/completed/sent`，兼容顶层 `request_count/completed_count/sent_count`。总数未知时显示统计中，已知但尚未打流时显示 `0 / 总数`；没有可回放请求时不将 `0 / 0` 显示为 100%。已完成包含处理结束的失败请求，100% 不代表全部成功；任务结果以终态为准。
 
 `BACKEND_URL` 用于 Vite 本地代理，不会将后端地址写入生产页面。生产部署需将 `npm run build` 生成的 dist/ 放到静态服务，并配置 `/api` 反向代理；不能只把 dist/ 放到 GitHub Pages 后期望其自动连接后端。
 
@@ -187,16 +192,16 @@ VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 - 指标清单和 PromQL 在 `src/data.ts` 的 `loadQueries`、`metricQueries`。TTFT/E2E/ITL/QT 使用 `rate(_sum[窗口]) / rate(_count[窗口])`，TPOT 使用上述解码耗时与生成 token 的特殊比值，共五条独立即时 query。模型标签来自当前下拉框，窗口来自历史查询范围；指标名可用 `VITE_PROMETHEUS_METRIC_NAMES` 覆盖。卡片数值是 Prometheus 即时查询在该回溯窗口内的 rate 结果，不是 query_range 曲线的前端平均。
 - 负载曲线：`sum by (model_name) (vllm:num_requests_running{model_name="所选模型"})` 和对应的 `num_requests_waiting`，在 Prometheus 汇总全部 engine 和 role。历史与回放各展示一条处理曲线、一条等待曲线；回放返回的部署标签仍用于筛选目标。前端直接绘制总值，不再平均。DeepSeek 的 proxy/prefill/decode 总和表示各阶段负载总和；若 proxy 和 worker 同时记录同一请求，该值不等于去重后的用户请求数。该口径不依赖 `VITE_MIXED_LATENCY_ROLE_MODELS`，普通模型同样汇总全部 engine。
 - 回放创建默认 `POST /api/replays`，请求体 `{ model_id, start_time, end_time }`，Unix 秒，左闭右开。返回 `{ replay_id, status, started_at?, request_count?, target?: { metrics_labels } }`。
-- 状态接口默认 `GET /api/replays/{id}`，返回 `{ status, started_at?, finished_at?, request_count?, sent_count?, completed_count?, target?: { metrics_labels } }`。状态支持 queued/preparing/running/draining/succeeded/failed/cancelled。`finished_at` 为全部请求处理完成时间。两个回放路径可通过 VITE_REPLAY_CREATE_PATH / VITE_REPLAY_STATUS_PATH 配置。
+- 状态接口默认 `GET /api/replays/{id}`，返回 `{ status, started_at?, finished_at?, request_count?, sent_count?, completed_count?, failed_count?, skipped_count?, progress?, error?, target?: { metrics_labels } }`。状态支持 queued/preparing/running/draining/cancelling/succeeded/failed/cancelled；识别取消中的状态，但本次未新增取消按钮。`finished_at` 为全部请求处理完成时间。两个回放路径可通过 VITE_REPLAY_CREATE_PATH / VITE_REPLAY_STATUS_PATH 配置。
 - 接口尚未接真实后端；创建回放响应缺少 replay_id 会明确报错。未知实际开始时间时，前端不会用点击时间替代。
 
 切换模型会清空历史选区，但保留已创建任务的模型。两个图窗使用相同纵轴上限；回放窗口可切换相对时间，历史窗口仍保留绝对时间。相对横轴从实际回放开始的 0 起算，使用数值轴；不足一分钟显示秒，较长区间显示分:秒或时:分:秒，tooltip 同时保留实际时刻。该开关只影响显示，不改变查询或回放参数。每次只创建一个活动任务。
 
 ## 限制
 
-回放状态接口为拟定契约，需后端实现。共享实例曲线包含其他流量，不能仅凭 model_name 区分回放来源。生产环境需要配置可区分部署的指标标签。花费卡、投机解码和模型实例树未在首版接入。
+回放接口已按独立 Benchmark 的响应字段接入，真实部署仍需配置地址、认证并联调。Benchmark 状态响应包含全部逐请求 `results`，大任务频繁轮询时可由后端提供轻量状态接口；本前端只读取状态与计数。共享实例曲线包含其他流量，不能仅凭 model_name 区分回放来源。生产环境需要配置可区分部署的指标标签。花费卡、投机解码和模型实例树未在首版接入。
 
 ## 已完成验证
 
-TypeScript 与生产构建通过；26 项解析、接口配置、缓存、模型映射、时间轴及时区测试通过，包含 DeepSeek 延迟混合 role 单行、NaN 分片跳过、engine 均值，以及历史/回放负载求和与目标部署筛选。浏览器验证覆盖拖拽选区、模型切换、固定回放模型、手机宽度、相对时间秒刻度和 tooltip、切回绝对时间、运行时错误，以及使用模拟 HTTP 响应的后端路径、NaN 显示和三字段回放请求。scripts/backend-check.cjs 已用 DeepSeek 模型名验证历史与回放窗口各只有一条处理曲线、一条等待曲线，tooltip 保留求和后的总值。scripts/latency-check.cjs 另验证五条独立延迟 query、当前模型和历史范围过滤、旧响应隔离、慢历史查询隔离、部分失败详情与空样本，以及普通模型的 role 行、模型重命名后的列表更新和成功空结果清理。上述浏览器验证使用模拟响应，尚未连接真实后端。
+TypeScript 与生产构建通过；30 项解析、接口配置、缓存、模型映射、时间轴、时区及回放响应适配测试通过，包含 DeepSeek 延迟混合 role 单行、NaN 分片跳过、engine 均值，以及历史/回放负载求和与目标部署筛选。浏览器验证覆盖拖拽选区、模型切换、固定回放模型、手机宽度、相对时间秒刻度和 tooltip、切回绝对时间、运行时错误，以及使用模拟 HTTP 响应的后端路径、NaN 显示和三字段回放请求。scripts/backend-check.cjs 验证历史与回放窗口各只有一条处理曲线、一条等待曲线，tooltip 保留求和后的总值。scripts/latency-check.cjs 另验证五条独立延迟 query、当前模型和历史范围过滤、旧响应隔离、慢历史查询隔离、部分失败详情与空样本。scripts/replay-progress-check.cjs 验证 Bearer 认证、创建计数、准备/零总数、慢曲线不阻塞 2 秒进度刷新、失败时保留数据、中英文、取消中、失败达到 100%、终态停止与 320px 布局。scripts/proxy-check.cjs 使用本地模拟服务验证双后端分流、自定义路径与认证头透传。上述浏览器验证使用模拟响应，尚未连接真实后端。
 
