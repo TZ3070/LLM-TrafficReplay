@@ -27,9 +27,13 @@ export interface Replay {
   modelName: string;
   metricsName: string;
   source: TimeRange; // 创建任务时复制的历史选区，用于查询原始请求档案。
-  status: 'queued' | 'preparing' | 'running' | 'draining' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
+  status: 'queued' | 'preparing' | 'running' | 'paused' | 'draining' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
   speed?: number;
   cancellable?: boolean;
+  pausable?: boolean;
+  resumable?: boolean;
+  pausedAt?: number;
+  pausedSeconds?: number;
   cancelRequestedAt?: number;
   revision?: number;
   startedAt?: number; // 后端 started_at：实际开始打流的 Unix 秒，不是按钮点击时间。

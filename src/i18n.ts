@@ -3,6 +3,15 @@ export type Language = 'zh' | 'en';
 const LANGUAGE_KEY = 'trafficReplay.language';
 
 const english: Record<string, string> = {
+  '已暂停': 'Paused',
+  '暂停回放': 'Pause replay',
+  '继续回放': 'Resume replay',
+  '正在提交暂停…': 'Requesting pause…',
+  '正在提交继续…': 'Requesting resume…',
+  '已暂停发送新请求；在途请求仍会完成，继续后保留剩余请求间隔。': 'New requests are paused. In-flight requests can finish; resuming preserves the remaining request intervals.',
+  '当前后端未提供暂停能力，请更新 Benchmark。': 'This backend does not provide pause capability. Update Benchmark.',
+  '暂停回放失败': 'Failed to pause replay',
+  '继续回放失败': 'Failed to resume replay',
   '任务历史区间': 'Task history range',
   '回放倍速': 'Replay speed',
   '倍速调整请求间隔，任务开始后保持不变。': 'Speed changes request intervals and stays fixed once the task starts.',
@@ -181,6 +190,8 @@ export function translate(language: Language, text: string, values: Record<strin
 
 // 数据层/后端错误保留原文存储，显示时翻译已知前端消息；不改写模型名或未知上游详情。
 const errorTranslations: Record<string, string> = {
+  '暂停回放失败：': 'Replay pause failed: ',
+  '继续回放失败：': 'Replay resume failed: ',
   '恢复回放失败：': 'Replay recovery failed: ',
   '取消回放失败：': 'Replay cancellation failed: ',
   '请先在连接设置中填写认证值，再恢复任务。': english['请先在连接设置中填写认证值，再恢复任务。'],

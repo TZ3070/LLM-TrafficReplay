@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Check, Clock3, Database, Languages, Layers3, LoaderCircle, Play, Radio, RefreshCw, Settings2, Terminal, Timer, X, Zap } from 'lucide-react';
+import { Activity, Check, Clock3, Database, Languages, Layers3, LoaderCircle, Pause, Play, Radio, RefreshCw, Settings2, Terminal, Timer, X, Zap } from 'lucide-react';
 import LoadChart from './LoadChart';
 import ReplayProgress from './ReplayProgress';
 import { isTerminalReplay } from './replay';
@@ -25,10 +25,12 @@ const CREATE = import.meta.env.VITE_REPLAY_CREATE_PATH || '/api/replays';
 const STATUS = import.meta.env.VITE_REPLAY_STATUS_PATH || '/api/replays/{id}';
 const ACTIVE = import.meta.env.VITE_REPLAY_ACTIVE_PATH || '/api/replays/active';
 const CANCEL = import.meta.env.VITE_REPLAY_CANCEL_PATH || '/api/replays/{id}/cancel';
-const PATHS = {create:CREATE,status:STATUS,active:ACTIVE,cancel:CANCEL};
+const PAUSE = import.meta.env.VITE_REPLAY_PAUSE_PATH || '/api/replays/{id}/pause';
+const RESUME = import.meta.env.VITE_REPLAY_RESUME_PATH || '/api/replays/{id}/resume';
+const PATHS = {create:CREATE,status:STATUS,active:ACTIVE,cancel:CANCEL,pause:PAUSE,resume:RESUME};
 const STORAGE_SCOPE = import.meta.env.VITE_REPLAY_STORAGE_SCOPE || `${CREATE}|${STATUS}|${ACTIVE}|${CANCEL}`;
 const PROXY_AUTH = import.meta.env.VITE_REPLAY_AUTH_MODE === 'proxy';
-const statusNames: Record<Replay['status'],string> = {queued:'等待开始',preparing:'准备请求',running:'回放中',draining:'等待处理完成',cancelling:'正在取消',succeeded:'已完成',failed:'失败',cancelled:'已取消'};
+const statusNames: Record<Replay['status'],string> = {queued:'等待开始',preparing:'准备请求',running:'回放中',paused:'已暂停',draining:'等待处理完成',cancelling:'正在取消',succeeded:'已完成',failed:'失败',cancelled:'已取消'};
 function maxLoad(a: LoadData,b: LoadData) { const numbers=[...a.running,...a.waiting,...b.running,...b.waiting].flatMap(s=>s.points.map(p=>p.value)).filter((v):v is number=>v!==undefined&&Number.isFinite(v));return numbers.length?Math.max(10,Math.ceil(Math.max(...numbers)*1.15/10)*10):undefined; }
 
 export default function App() {
@@ -75,7 +77,7 @@ export default function App() {
   const [relative,setRelative]=useState(saved.history?.relative || false); // 只控制横轴展示，不改变查询边界或打流速度。
   const [speed,setSpeed]=useState(1);
   const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:API.modelMetricsMap});
-  const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,restoredId}=replayController;
+  const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,controlling,restoredId}=replayController;
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
   const selectionRef=useRef(selection); selectionRef.current=selection;
   const active=!!replay&&!isTerminalReplay(replay.status);
@@ -255,7 +257,7 @@ export default function App() {
             </div>
           </section>
           <section className={`chart-panel replay-panel ${!replay?'no-replay':''}`}>
-            <div className="panel-header"><div><span className="panel-index">02</span><h3>{t('回放观测')}</h3></div><span className={`badge ${active?'live':replay?.status==='failed'?'failed':'neutral'}`}>{active&&<i/>}{t(replay?statusNames[replay.status]:'等待回放')}</span></div>
+            <div className="panel-header"><div><span className="panel-index">02</span><h3>{t('回放观测')}</h3></div><span className={`badge ${replay?.status==='paused'?'neutral':active?'live':replay?.status==='failed'?'failed':'neutral'}`}>{active&&replay?.status!=='paused'&&<i/>}{t(replay?statusNames[replay.status]:'等待回放')}</span></div>
             <div className="panel-model"><strong>{replay?.modelName||t('等待创建回放任务')}</strong><span>{replay?.startedAt!==undefined?t('{time} 开始',{time:dateTime(replay.startedAt)}):t('回放开始后自动获取模型曲线')}</span></div>
             {replay&&<>
               <ReplayProgress replay={replay} language={language}/>
@@ -266,7 +268,13 @@ export default function App() {
               </div>}
               {replayData.errors.length>0&&<div className="chart-error">{replayData.errors.map(message).join(language==='zh'?'；':'; ')}</div>}
               <div className="task-summary"><div><span>{t('历史区间')}</span><strong>{clock(replay.source.start)} — {clock(replay.source.end)}</strong></div><div><span>{t('回放规则')}</span><strong>{replay.speed!==undefined?t('{speed}× · 按历史间隔调度',{speed:replay.speed}):t('倍速未知')}</strong></div></div>
-              <div className="replay-actions"><code title={replay.id}>{replay.id}</code>{active&&<button className="button secondary cancel-replay" disabled={!ready||!replay.cancellable||cancelling||replay.status==='cancelling'} onClick={()=>void replayController.cancel()}>{cancelling&&<LoaderCircle size={14} className="spin"/>}{t(cancelling?'正在提交取消…':replay.status==='cancelling'?'正在取消':'取消回放')}</button>}</div>
+              <div className="replay-actions"><code title={replay.id}>{replay.id}</code>{active&&<>
+                <button className="button secondary pause-replay" disabled={!ready||cancelling||!!controlling||(replay.status==='paused'?!replay.resumable:!replay.pausable)} onClick={()=>void (replay.status==='paused'?replayController.resume():replayController.pause())}>
+                  {controlling?<LoaderCircle size={14} className="spin"/>:replay.status==='paused'?<Play size={14}/>:<Pause size={14}/>}{t(controlling==='pause'?'正在提交暂停…':controlling==='resume'?'正在提交继续…':replay.status==='paused'?'继续回放':'暂停回放')}
+                </button>
+                <button className="button secondary cancel-replay" disabled={!ready||!replay.cancellable||cancelling||!!controlling||replay.status==='cancelling'} onClick={()=>void replayController.cancel()}>{cancelling&&<LoaderCircle size={14} className="spin"/>}{t(cancelling?'正在提交取消…':replay.status==='cancelling'?'正在取消':'取消回放')}</button>
+              </>}</div>
+              {active&&mode==='backend'&&replay.pausable===undefined&&<div className="replay-caption">{t('当前后端未提供暂停能力，请更新 Benchmark。')}</div>}
               {replay.status==='cancelling'&&<div className="replay-caption">{t('已提交的请求仍可能完成；取消期间继续更新进度。')}</div>}
               <div className="replay-caption">{t('已完成包含处理结束的失败请求；任务结果以状态为准。')}</div>
               <div className="replay-caption">{t(mode==='demo'?'模拟回放，时长随倍速调整；曲线不代表真实优化效果。':'实例指标可能包含其他流量；回放尾部指标受采集和缓存延迟影响。')}</div>
@@ -291,7 +299,7 @@ export default function App() {
       {authHeader==='Authorization'&&<p className="settings-note">{t('Benchmark 使用服务端 BENCHMARK_API_KEY。请填写 Bearer 空格加实际密钥，不带尖括号；页面不会自动补前缀。')}</p>}
       <p className="settings-note">{t('凭据仅保存在页面内存中，不写入本地存储。Prometheus 查询不携带认证。')}</p>
       </>}
-      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling} onClick={()=>{setAuthSettings({apiKey:apiKey.trim(),authHeader});setSettingsToken(t=>t+1);setSettingsOpen(false);replayController.recover();}}>{t('应用设置')}</button></div>
+      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||!!controlling} onClick={()=>{setAuthSettings({apiKey:apiKey.trim(),authHeader});setSettingsToken(t=>t+1);setSettingsOpen(false);replayController.recover();}}>{t('应用设置')}</button></div>
     </section></div>}
   </div>;
 }

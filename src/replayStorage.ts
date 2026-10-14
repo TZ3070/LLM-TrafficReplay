@@ -31,7 +31,7 @@ export function readSnapshot(scope: string): ReplaySnapshot {
 export function saveSnapshot(scope: string, value: ReplaySnapshot) {
   // 显式白名单：不保存凭据、完整请求、结果文本或临时网络错误。
   const r=value.replay;
-  const replay=r && {id:r.id,modelId:r.modelId,sourceModelId:r.sourceModelId,modelName:r.modelName,metricsName:r.metricsName,source:r.source,status:r.status,speed:r.speed,cancellable:r.cancellable,cancelRequestedAt:r.cancelRequestedAt,revision:r.revision,startedAt:r.startedAt,finishedAt:r.finishedAt,metricsLabels:r.metricsLabels,requestCount:r.requestCount,sentCount:r.sentCount,completedCount:r.completedCount,failedCount:r.failedCount,skippedCount:r.skippedCount,statusUpdatedAt:r.statusUpdatedAt,taskError:r.taskError};
+  const replay=r && {id:r.id,modelId:r.modelId,sourceModelId:r.sourceModelId,modelName:r.modelName,metricsName:r.metricsName,source:r.source,status:r.status,speed:r.speed,cancellable:r.cancellable,pausable:r.pausable,resumable:r.resumable,pausedAt:r.pausedAt,pausedSeconds:r.pausedSeconds,cancelRequestedAt:r.cancelRequestedAt,revision:r.revision,startedAt:r.startedAt,finishedAt:r.finishedAt,metricsLabels:r.metricsLabels,requestCount:r.requestCount,sentCount:r.sentCount,completedCount:r.completedCount,failedCount:r.failedCount,skippedCount:r.skippedCount,statusUpdatedAt:r.statusUpdatedAt,taskError:r.taskError};
   try { write(localStorage,key(scope),{replay,history:value.history}); } catch { /* 无本地存储时使用后端恢复。 */ }
 }
 export function readPending(scope: string): PendingReplay | undefined {

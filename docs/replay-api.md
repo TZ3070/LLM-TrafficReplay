@@ -13,11 +13,12 @@
 | `/api/replays` | POST | 创建回放任务，返回任务 ID | Benchmark 提供 |
 | `/api/replays/active?view=status` | GET | 恢复当前活动任务 | Benchmark 提供 |
 | `/api/replays/{id}/cancel` | POST | 请求取消任务 | Benchmark 提供 |
+| `/api/replays/{id}/pause`、`/resume` | POST | 暂停/继续任务 | 前端已接入，Benchmark 需新增 |
 | `/api/replays/{id}` | GET | 查询状态、计数、实际开始/结束时间、目标指标标签 | Benchmark 提供 |
 | `/api/prometheus/query_range` | GET | 查询历史及回放后的处理/等待曲线 | 使用已有接口 |
 | `/api/prometheus/query` | GET | 模型发现及五项即时延迟查询 | 使用已有接口 |
 
-前端已支持倍速、活动任务恢复、进度、取消及刷新后的曲线重建；没有完整任务列表。手动认证刷新后重新输入密钥即可恢复，服务端代理认证模式可自动恢复。
+前端已支持倍速、活动任务恢复、进度、取消、暂停/继续及刷新后的曲线重建；暂停/继续需要后端实现第 13 节的契约，没有完整任务列表。手动认证刷新后重新输入密钥即可恢复，服务端代理认证模式可自动恢复。
 
 ```mermaid
 sequenceDiagram
@@ -253,6 +254,7 @@ GET /api/replays/replay-20261012-0001
 | `queued` | 等待开始 | 已入队，等待执行 |
 | `preparing` | 准备请求 | 检索档案、核对路由、准备调度 |
 | `running` | 回放中 | 已开始发流，仍有请求尚未发送 |
+| `paused` | 已暂停 | 停止新调度提交，已提交请求可继续完成；仍为活动任务 |
 | `draining` | 等待处理完成 | 请求发送完毕，等待在途推理/流式响应结束 |
 | `cancelling` | 正在取消 | 等待已提交请求结束；前端继续查询，取消按钮禁用 |
 | `succeeded` | 已完成 | 任务成功结束 |
@@ -398,6 +400,10 @@ REPLAY_BACKEND_URL=http://<BENCHMARK_IP>:<BENCHMARK_PORT>
 VITE_PROMETHEUS_API_PREFIX=/api/prometheus
 VITE_REPLAY_CREATE_PATH=/api/replays
 VITE_REPLAY_STATUS_PATH=/api/replays/{id}
+VITE_REPLAY_ACTIVE_PATH=/api/replays/active
+VITE_REPLAY_CANCEL_PATH=/api/replays/{id}/cancel
+VITE_REPLAY_PAUSE_PATH=/api/replays/{id}/pause
+VITE_REPLAY_RESUME_PATH=/api/replays/{id}/resume
 VITE_MODEL_METRICS_MAP='{}'
 ```
 
@@ -436,8 +442,20 @@ VITE_MODEL_METRICS_MAP='{}'
 
 manual（默认）：页面输入 `Bearer 实际BENCHMARK_API_KEY`，认证只在页面内存，刷新后重新输入并应用设置即恢复任务。
 
-proxy：设置 `VITE_REPLAY_AUTH_MODE=proxy` 和服务端 `BENCHMARK_API_KEY=原始密钥`，Vite 向创建/状态/active/cancel 路由注入 Bearer 头，浏览器不持有服务密钥。该密钥不使用 VITE_ 前缀，不进入构建产物。Vite 仅监听回环地址；生产必须由已有受控且有访问认证的反向代理提供相同路由注入，不能仅发布静态文件就期待此功能生效。
+proxy：设置 `VITE_REPLAY_AUTH_MODE=proxy` 和服务端 `BENCHMARK_API_KEY=原始密钥`，Vite 向创建/状态/active/cancel/pause/resume 路由注入 Bearer 头，浏览器不持有服务密钥。该密钥不使用 VITE_ 前缀，不进入构建产物。Vite 仅监听回环地址；生产必须由已有受控且有访问认证的反向代理提供相同路由注入，不能仅发布静态文件就期待此功能生效。
 
 `VITE_REPLAY_ACTIVE_PATH` / `VITE_REPLAY_CANCEL_PATH` 支持自定义同源路径，Vite 分流也同步覆盖这些路径。`VITE_REPLAY_STORAGE_SCOPE` 区分同域不同回放环境，切换环境时应修改后重建。Prometheus query/query_range 继续使用现有后端，不携带 Benchmark 凭据。
 
 浏览器刷新只是恢复观测；后端进程重启仍将活动任务标记 failed，不支持断点续跑。自动恢复不触发真实流量重放，完整结果也不缓存到浏览器。
+
+## 13. 暂停与继续契约
+
+前端已支持 `paused`，但未修改的 Benchmark 不提供暂停接口。所需后端改动及补丁应用顺序见 [README](../README.md#暂停继续与取消流程2026-10-14)。本次只修改 llm-dashboard，不自动修改或部署 Benchmark。
+
+`POST /api/replays/{id}/pause`、`POST /api/replays/{id}/resume` 沿用回放 Bearer 认证，无请求体，不要求创建幂等键。成功返回 200 和轻量公共任务（不含 results）；非法状态返回 409 + task，未知 ID 返回 404。重复暂停不重置起点；重复继续在 queued/running/draining 安全返回当前状态。
+
+公共任务增加 `pausable`、`resumable`、`paused_at`、`paused_seconds`。pausable 仅在 queued/running 且未全部提交时为 true；resumable 仅在 paused 为 true。paused_at 是当前暂停起点的 Unix 秒，继续时 null；paused_seconds 是已经结束的暂停累计秒数。完整任务没有声明能力时，前端禁用按钮，不能根据旧缓存假定能力仍可用。
+
+后端暂停、继续、取消与线程池提交必须使用同一把锁，并用 Condition 唤醒等待调度。暂停停止新的调度提交，不撤回已提交请求或线程池待执行请求；在途完成数量仍增加。继续需用单调时钟扣除暂停时长，保持剩余间隔，不把暂停时间变成补发流量。最后一次提交与 draining 切换必须原子完成，避免任务已经全部提交却暂停。
+
+paused 属于活动和可取消状态，阻止新建任务；刷新通过 active 恢复原任务，保持暂停，不自动继续。进度与 Prometheus 曲线轮询继续，查询起点仍为原 started_at。取消必须通知 Condition，唤醒暂停线程并转为 cancelling；已提交请求结束后才 cancelled。后端进程重启将 paused 标记 failed，不承诺进程级恢复。

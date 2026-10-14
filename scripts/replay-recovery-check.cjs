@@ -69,8 +69,9 @@ const proxy=process.env.CHECK_PROXY==='1';
   };
   const select=async page=>{
     const inputs=page.locator('.selection-form input');
-    await inputs.first().fill(await inputs.first().getAttribute('min'));
-    await inputs.last().fill(await inputs.last().getAttribute('max'));
+    // Chrome 的分段时间控件在零秒时省略秒段；使用等价的分钟精度值。
+    await inputs.first().fill((await inputs.first().getAttribute('min')).replace(/:00$/,''));
+    await inputs.last().fill((await inputs.last().getAttribute('max')).replace(/:00$/,''));
     await page.locator('#replay-speed').selectOption('5');
   };
   const begin=async page=>{
