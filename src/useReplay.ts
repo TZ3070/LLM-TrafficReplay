@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, request, type ClientOptions } from './data';
 import { applyReplayResponse, isTerminalReplay, restoreReplay } from './replay';
 import { readPending, readSnapshot, savePending, saveSnapshot, type PendingReplay, type ReplayBody } from './replayStorage';
+import { createUuid } from './uuid';
 import type { Replay } from './types';
 
 export interface ReplayPaths { create: string; status: string; active: string; cancel: string; pause: string; resume: string }
@@ -129,7 +130,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
     const token=epoch.current,retrying=mode==='backend'&&pendingRef.current?.key===op.key;
     try{
       if(mode==='backend')setOperation(op);
-      const raw=mode==='demo'?{replay_id:`demo-${crypto.randomUUID()}`,status:op.body.speed==='burst'?'draining':'running',started_at:Date.now()/1000,request_count:Math.round((op.body.end_time-op.body.start_time)*2.8),sent_count:op.body.speed==='burst'?Math.round((op.body.end_time-op.body.start_time)*2.8):0,completed_count:0,cancellable:true,pausable:op.body.speed!=='burst',resumable:false,paused_seconds:0,speed:op.body.speed}:await request(paths.create,{method:'POST',headers:{'Idempotency-Key':op.key},body:op.signature},authRef.current);
+      const raw=mode==='demo'?{replay_id:`demo-${createUuid()}`,status:op.body.speed==='burst'?'draining':'running',started_at:Date.now()/1000,request_count:Math.round((op.body.end_time-op.body.start_time)*2.8),sent_count:op.body.speed==='burst'?Math.round((op.body.end_time-op.body.start_time)*2.8):0,completed_count:0,cancellable:true,pausable:op.body.speed!=='burst',resumable:false,paused_seconds:0,speed:op.body.speed}:await request(paths.create,{method:'POST',headers:{'Idempotency-Key':op.key},body:op.signature},authRef.current);
       if(epoch.current!==token)return;
       adopt(raw,false,op.context);if(mode==='backend')setOperation(undefined);
     }catch(e){
@@ -145,9 +146,13 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
     }finally{actionBusy.current=false;setSubmitting(false);}
   };
   const begin=async(body:ReplayBody,context:Replay)=>{
-    const signature=JSON.stringify(body),existing=mode==='backend'?pendingRef.current:undefined;
-    if(existing && existing.signature!==signature){setActionError('存在结果待确认的创建请求，请先重试原请求。');return;}
-    await submit(existing || {key:crypto.randomUUID(),signature,body,context});
+    try {
+      const signature=JSON.stringify(body),existing=mode==='backend'?pendingRef.current:undefined;
+      if(existing && existing.signature!==signature){setActionError('存在结果待确认的创建请求，请先重试原请求。');return;}
+      await submit(existing || {key:createUuid(),signature,body,context});
+    } catch(e) {
+      setActionError(`创建回放失败：${(e as Error).message}`);
+    }
   };
   const retryPending=async()=>{if(mode==='backend'&&pendingRef.current)await submit(pendingRef.current);};
   const cancel=async()=>{

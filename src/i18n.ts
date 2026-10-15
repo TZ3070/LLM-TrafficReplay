@@ -248,6 +248,7 @@ const errorTranslations: Record<string, string> = {
   '模型加载失败：': 'Model loading failed: ',
   '任务状态查询失败：': 'Task status query failed: ',
   '创建回放失败：': 'Replay creation failed: ',
+  '当前浏览器无法生成回放标识，请更新浏览器或通过 HTTPS 访问。': 'This browser cannot generate a replay ID. Update your browser or use HTTPS.',
   'Prometheus 查询失败': 'Prometheus query failed',
   'Prometheus 响应类型不匹配': 'Unexpected Prometheus response type',
   '查询返回重复分组，请在 PromQL 中聚合 engine 分片': 'Duplicate groups returned. Aggregate engine shards in PromQL.',
