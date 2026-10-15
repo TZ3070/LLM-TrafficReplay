@@ -14,12 +14,12 @@ export type CacheData = Record<CacheMetricKey, { current: CacheResult; trend: Ca
 export interface CachePlan { range: TimeRange; rateRange?: TimeRange; evaluatedAt: number; settleAfter?: number }
 export const emptyCacheData = (): CacheData => ({ kv: { current: { series: [] }, trend: { series: [] } }, hitRate: { current: { series: [] }, trend: { series: [] } }, hitTokens: { current: { series: [] }, trend: { series: [] } } });
 
-/** 单位必须显式确认；不根据 _perc 或 _total 后缀猜测真实单位。 */
+/** 当前部署已确认 hits/queries 按 token 计数；其他部署可显式覆盖单位，不按指标后缀猜测。 */
 export function createReplayCacheConfig(env: Record<string, string | undefined>, scrapeSeconds: number): ReplayCacheConfig {
   const defaults: ReplayCacheConfig = {
     kvMetric: 'vllm:kv_cache_usage_perc', kvUnit: 'ratio',
     hitsMetric: 'vllm:prefix_cache_hits_total', queriesMetric: 'vllm:prefix_cache_queries_total',
-    counterUnit: 'unknown', windowSeconds: 60, scrapeSeconds, labels: {},
+    counterUnit: 'tokens', windowSeconds: 60, scrapeSeconds, labels: {},
   };
   let raw: unknown = {};
   try { raw = JSON.parse(env.VITE_REPLAY_CACHE_CONFIG?.trim() || '{}'); }
@@ -51,7 +51,7 @@ export function replayCachePlan(replay: Replay, now: number, config: ReplayCache
     settleAfter: finalTime === undefined ? undefined : finalTime + 30 };
 }
 
-export function cacheQueries(replay: Replay, config: ReplayCacheConfig, evaluatedAt?: number): Record<CacheMetricKey, string> {
+export function cacheQueries(replay: Replay, config: ReplayCacheConfig): Record<CacheMetricKey, string> {
   const labels = { ...replay.metricsLabels };
   for (const [key, value] of Object.entries(config.labels)) {
     const target = labels[key] ?? (key === 'model_name' ? replay.metricsName : undefined);
@@ -59,12 +59,10 @@ export function cacheQueries(replay: Replay, config: ReplayCacheConfig, evaluate
     labels[key] = value;
   }
   const f = selector(replay.metricsName, labels);
-  const at = evaluatedAt === undefined ? '' : ` @ ${evaluatedAt}`;
-  const gauge = `${config.kvMetric}${f}${at}`;
-  const clock = evaluatedAt === undefined ? 'time()' : String(evaluatedAt);
+  const gauge = `${config.kvMetric}${f}`;
   // 不允许 Prometheus 的默认 lookback 将回放前或已陈旧的 gauge 当作当前值。
-  const kv = `(${gauge} and (timestamp(${gauge}) >= ${replay.startedAt}) and (timestamp(${gauge}) >= (${clock} - ${2 * config.scrapeSeconds}))) * ${config.kvUnit === 'ratio' ? 100 : 1}`;
-  const rate = (metric: string) => `sum(rate(${metric}${f}[${promDuration(config.windowSeconds)}]${at}))`;
+  const kv = `(${gauge} and (timestamp(${gauge}) >= ${replay.startedAt}) and (timestamp(${gauge}) >= (time() - ${2 * config.scrapeSeconds}))) * ${config.kvUnit === 'ratio' ? 100 : 1}`;
+  const rate = (metric: string) => `sum(rate(${metric}${f}[${promDuration(config.windowSeconds)}]))`;
   const hits = rate(config.hitsMetric), queries = rate(config.queriesMetric);
   return { kv, hitRate: `(100 * ${hits} / ${queries}) and (${queries} > 0)`, hitTokens: hits };
 }
@@ -109,16 +107,17 @@ export function parseCacheResult(raw: unknown, key: CacheMetricKey, type: 'vecto
 
 export async function fetchReplayCache(replay: Replay, plan: CachePlan, config: ReplayCacheConfig, api: ApiConfig): Promise<CacheData> {
   const data = emptyCacheData();
-  const instant = cacheQueries(replay, config, plan.evaluatedAt), rangeQueries = cacheQueries(replay, config);
+  const queries = cacheQueries(replay, config);
   const keys: CacheMetricKey[] = ['kv', ...(plan.rateRange && config.counterUnit !== 'unknown' ? ['hitRate' as const, ...(config.counterUnit === 'tokens' ? ['hitTokens' as const] : [])] : [])];
   await Promise.all(keys.flatMap(key => (['current', 'trend'] as const).map(async kind => {
-    const range = kind === 'trend' ? key === 'kv' ? plan.range : plan.rateRange : undefined;
+    // 单点 query_range 在指定时刻求值，兼容拒绝 @ 修饰符的即时查询代理；终态仍查询原任务时间。
+    const range = kind === 'current' ? { start: plan.evaluatedAt, end: plan.evaluatedAt } : key === 'kv' ? plan.range : plan.rateRange!;
     // 保留已有 Prometheus 缓存与去重；显式步长限制为约 300 点且不密于采集间隔。
-    const path = promPath(kind === 'current' ? instant[key] : rangeQueries[key], range, api);
+    const path = promPath(queries[key], range, api);
     const url = new URL(path, 'http://dashboard.local');
-    const step = range ? Math.max(config.scrapeSeconds, Math.ceil((range.end - range.start) / 300)) : undefined;
-    if (step !== undefined) url.searchParams.set('step', String(step));
-    try { data[key][kind] = parseCacheResult(await requestPrometheus(url.pathname + url.search), key, kind === 'trend' ? 'matrix' : 'vector', plan.evaluatedAt, range && step ? { ...range, step } : undefined); }
+    const step = Math.max(config.scrapeSeconds, Math.ceil((range.end - range.start) / 300));
+    url.searchParams.set('step', String(step));
+    try { data[key][kind] = parseCacheResult(await requestPrometheus(url.pathname + url.search), key, 'matrix', plan.evaluatedAt, { ...range, step }); }
     catch (error) { data[key][kind] = { series: [], error: (error as Error).message }; }
   })));
   return data;

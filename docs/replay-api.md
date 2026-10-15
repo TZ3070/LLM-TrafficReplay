@@ -2,9 +2,11 @@
 
 本文依据当前前端 `src/App.tsx`、`src/replay.ts`、`src/data.ts` 和 `src/types.ts` 编写。回放接口已适配独立 Benchmark 后端，指标接口使用已有看板后端；真实部署地址与认证仍需联调，文档不表示已连接真实服务。
 
+2026-10-15 已复核 Benchmark `ef22cd2`：数字倍速与 `speed: "burst"` 的创建、返回和恢复契约兼容。下文的轻量状态、暂停/继续、版本号、指标映射和取消原子性仍有后端实现缺口，burst 也未在全部发送后及时进入 draining；实测影响见 [README 对接检查](../README.md#当前-benchmark-对接检查与缺口)。
+
 ## 1. 功能与接口范围
 
-用户选择一个模型，在历史处理/等待曲线中拖选区间，再确认回放。前端提交模型、历史开始时间、历史结束时间及倍速。后端查询完整请求档案，按照原始请求间隔除以倍速，将这段流量重新发送给该模型当前优化后的部署。
+用户选择一个模型，在历史处理/等待曲线中拖选区间，再确认回放。前端提交模型、历史开始时间、历史结束时间及倍速。数字倍速按原始请求间隔除以倍速调度；`speed: "burst"` 忽略历史间隔，尽快提交所选区间的全部请求。
 
 创建任务采用异步方式：接口返回任务 ID，后台继续检索、调度和发送请求。前端通过状态接口获取实际打流时间，再使用已有 Prometheus 接口查询回放后的曲线。
 
@@ -101,9 +103,20 @@ POST /api/replays
 | `model_id` | string | 是 | 所选逻辑模型；默认就是下拉框中的 Prometheus `model_name`，配置映射时为回放别名 |
 | `start_time` | number | 是 | 历史区间开始，Unix 整数秒 |
 | `end_time` | number | 是 | 历史区间结束，Unix 整数秒，必须大于开始 |
-| `speed` | number | 前端始终发送 | 有限正数；控件提供 0.5、1、2、5、10，默认 1 |
+| `speed` | number \| `"burst"` | 前端始终发送 | 有限正数，或精确字符串 `"burst"`；控件显示 0.5、1、2、5、10、`∞`，默认 1 |
 
-当前前端发送这四个字段，不发送目标 IP、部署实例或完整请求内容。倍速只缩放发送间隔，不修改推理耗时；1× 表示原速。后端必须将逻辑模型解析为优化后的目标路由，并在任务创建时保存目标快照，避免任务运行期间配置变化导致打流目标漂移。
+当前前端发送这四个字段，不发送目标 IP、部署实例或完整请求内容。界面 `∞` 只是 `"burst"` 的显示形式，不增加布尔字段；其他选项继续发送 JSON number。数字倍速只缩放发送间隔，不修改推理耗时，1× 表示原速；`"burst"` 不再等待历史间隔，在空闲并发槽位出现时继续发送后续请求，提交速度和实际并发仍受后端线程池、队列与上游容量限制。后端必须将逻辑模型解析为优化后的目标路由，并在任务创建时保存目标快照，避免任务运行期间配置变化导致打流目标漂移。
+
+突发模式请求示例：
+
+```json
+{
+  "model_id": "DeepSeek-R1",
+  "start_time": 1791770400,
+  "end_time": 1791771000,
+  "speed": "burst"
+}
+```
 
 ### 3.2 响应
 
@@ -132,7 +145,7 @@ POST /api/replays
 
 | 字段 | 类型 | 对接要求 | 含义 |
 | --- | --- | --- | --- |
-| `speed` | number | 返回创建时固定倍速 | 有限正数，恢复时不依赖控件当前值 |
+| `speed` | number \| `"burst"` | 原样返回创建时固定值 | 有限正数或 `"burst"`，恢复时不依赖控件当前值 |
 | `cancellable` | boolean | 返回是否可取消 | cancelling 和终态为 false |
 | `revision` | number | 推荐返回递增版本 | 拒绝迟到的旧快照 |
 | `replay_id` | string | 必须返回非空任务 ID | 后续状态 GET 的路径参数；不能改名为 `id` 或 `task_id` |
@@ -390,7 +403,7 @@ step  = max(5, ceil((end - start) / 60))
 2. 解析逻辑模型到历史档案筛选条件、当前优化部署路由及目标指标标签，固定到任务记录。
 3. 持久化任务与幂等关系，可靠入队，尽快返回 `202` 和任务 ID。
 4. 后台按档案原始请求时间检索 `[start_time, end_time)` 中的请求，确定 `request_count`。
-5. 并发调度，将原始请求到达间隔除以 speed；首个请求发出时记录 `started_at`。
+5. 并发调度：数字 speed 将原始请求到达间隔除以 speed；`"burst"` 忽略历史间隔，按后端并发上限尽快发送全部请求。首个请求提交时记录 `started_at`。
 6. 发送完毕转为 `draining`，收集响应结束/错误/超时结果并持续更新计数。
 7. 工作结束后记录终态和 `finished_at`；GET 始终返回任务的完整已知状态。
 
@@ -418,7 +431,7 @@ VITE_MODEL_METRICS_MAP='{}'
 联调顺序：
 
 1. 在页面切换“后端”，确认模型、历史曲线正常。
-2. 选取有请求档案的历史区间，确认创建 POST 包含 model_id/start_time/end_time/speed 四字段，响应为直接 JSON 且包含 `replay_id`。
+2. 选取有请求档案的历史区间，确认创建 POST 包含 model_id/start_time/end_time/speed 四字段；数字选项为 JSON number，`∞` 为字符串 `"burst"`。响应为直接 JSON 且包含 `replay_id`。
 3. 验证状态从排队/准备进入运行，首个真实请求发送后才出现 `started_at`；核对模型确实为当前优化部署。
 4. 检查右侧两个 `query_range` 请求的起点为实际打流时间，而非历史 `start_time`，且目标标签能返回数据。
 5. 验证全部发出后不会提前完成；在途请求结束后才返回终态与 `finished_at`。
@@ -430,7 +443,7 @@ VITE_MODEL_METRICS_MAP='{}'
 
 ## 11. 任务恢复、取消与刷新契约
 
-公共任务响应必须包含 replay_id、status、model_id 或 target_model、source_model、start_time、end_time；补充 speed、cancellable、revision、cancel_requested_at 和 target.metrics_labels。创建、状态、active.task、409.active_task、取消以及 409.task 使用同一任务结构。speed 是创建时固定值，revision 随持久化更新递增。
+公共任务响应必须包含 replay_id、status、model_id 或 target_model、source_model、start_time、end_time；补充 speed、cancellable、revision、cancel_requested_at 和 target.metrics_labels。创建、状态、active.task、409.active_task、取消以及 409.task 使用同一任务结构。speed 是创建时固定的正数或 `"burst"`，必须原样返回；revision 随持久化更新递增。
 
 活动查询返回 `{"active":true,"task":{...}}` 或 `{"active":false,"task":null}`。前端只在成功确认没有活动任务后才能新建；401/403/503、未知状态或不完整任务不能当作没有活动任务。
 
@@ -468,8 +481,8 @@ paused 属于活动和可取消状态，阻止新建任务；刷新通过 active
 
 ## 14. 回放缓存指标观测
 
-新增区域复用任务 `started_at`、`finished_at`、实际指标模型名和 `target.metrics_labels`，独立查询已有 Prometheus query/query_range，不新增 Benchmark 接口或发送额外推理请求。默认指标为 `vllm:kv_cache_usage_perc`、`vllm:prefix_cache_hits_total`、`vllm:prefix_cache_queries_total`，名称/单位/窗口通过 `VITE_REPLAY_CACHE_CONFIG` 配置；完整口径和部署条件见 [README](../README.md#回放缓存观测2026-10-15)。
+新增区域复用任务 `started_at`、`finished_at`、实际指标模型名和 `target.metrics_labels`，独立查询已有 Prometheus query_range，不新增 Benchmark 接口或发送额外推理请求。默认指标为 `vllm:kv_cache_usage_perc`、`vllm:prefix_cache_hits_total`、`vllm:prefix_cache_queries_total`，名称/单位/窗口通过 `VITE_REPLAY_CACHE_CONFIG` 配置；完整口径和部署条件见 [README](../README.md#回放缓存观测2026-10-15)。
 
-KV 每实例独立曲线，卡片显示最大使用率。命中率为部署 hits rate 之和除以 queries rate 之和；计数单位未知时先显示待确认，确认 token 单位才启用命中 token/s，blocks/requests 单位不冒充 token。指标后端须透传完整 PromQL（包括 @、timestamp）、start/end/step 并正确区分缓存键。计数趋势等待完整回放后窗口，终态按固定历史时刻查询，刷新恢复原任务完整时间段。
+KV 每实例独立曲线，卡片显示最大使用率。命中率为部署 hits rate 之和除以 queries rate 之和；当前部署已确认 token 计数，默认启用命中两项，页面可为当前任务切换单位。显式 unknown 时先显示待确认；blocks/requests 仅展示命中率。缓存卡片使用 `start=end` 的单点 query_range，趋势使用完整区间，均不依赖 `@`。指标后端须透传完整 PromQL（支持 timestamp、time、rate 和向量匹配）、start/end/step 并正确区分缓存键。计数趋势等待完整回放后窗口，终态按固定历史时刻查询，刷新恢复原任务完整时间段。缓存曲线默认相对时间，从实际 started_at 的 0 起算，不补造起点数据。
 
 Benchmark 当前仅提供 model_name 时，可能包含其他部署流量；精确定位应在公共任务响应增加真实部署标签，同样标签须存在于全部相关指标。HA/重复采集去重和 vLLM 指标/单位确认属于指标侧职责，本次仅修改 llm-dashboard。

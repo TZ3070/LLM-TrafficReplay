@@ -2,6 +2,10 @@
 .cache-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:14px 0; }
 .cache-card-note,.cache-instance { margin-top:8px; color:#8792a3; font-size:10px; line-height:1.7; overflow-wrap:anywhere; }
 .cache-instance { color:#5966bf; }
+.cache-unit-settings { display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; margin-top:12px; color:#8792a3; font-size:10px; line-height:1.7; }
+.cache-unit-settings label { display:flex; align-items:center; gap:8px; }
+.cache-unit-settings select { padding:5px 8px; color:#47546a; background:#fff; border:1px solid #e0e5ed; border-radius:4px; }
+.cache-unit-settings>span { flex:1 1 220px; }
 .cache-charts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
 .cache-panel-kv { grid-column:1/-1; }
 .cache-panel-header { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; padding:16px 18px 10px; }

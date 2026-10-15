@@ -23,8 +23,9 @@ export default function CacheTrend({ series, range, relativeOrigin, percent, lan
     chart.current?.setOption({
       animation: false, grid: { left: 52, right: 22, top: 22, bottom: 46 },
       xAxis: { type: time.type, min: time.min, max: time.max, splitNumber: ref.current!.clientWidth < 500 ? 3 : 6,
+        minInterval: time.relative ? 1 : undefined,
         axisLine: { lineStyle: { color: '#e5e9f0' } }, axisTick: { show: false }, splitLine: { show: false },
-        axisLabel: { fontSize: 10, color: '#8b95a7', formatter: time.format, hideOverlap: true } },
+        axisLabel: { fontSize: 10, color: '#8b95a7', formatter: time.format, hideOverlap: true, showMinLabel: time.relative ? true : undefined } },
       yAxis: { type: 'value', min: 0, max: percent ? 100 : undefined, splitNumber: 4,
         axisLabel: { color: '#8b95a7', fontSize: 10, formatter: percent ? '{value}%' : '{value}' },
         splitLine: { lineStyle: { color: '#edf0f5', type: 'dashed' } } },

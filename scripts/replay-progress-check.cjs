@@ -26,7 +26,7 @@ const assert = require('node:assert/strict');
           response={status:'success',data:{resultType:'vector',result:[{metric:query.startsWith('count by')?{model_name:'benchmark-model'}:{},value:[started,'1']}]}};
         } else {
           const start=Number(url.searchParams.get('start')),end=Number(url.searchParams.get('end'));
-          if(start===started) {
+          if(start===started&&/num_requests_(running|waiting)/.test(url.searchParams.get('query')||'')) {
             replayCurveCalls++;
             if(holdCurves)await curveGate;
           }

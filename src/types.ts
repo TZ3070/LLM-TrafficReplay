@@ -19,6 +19,7 @@ export interface LoadData {
   errors: string[];
   failedQueries?: ('running' | 'waiting')[]; // 只对失败查询保留最近成功曲线，成功空结果仍为空。
 }
+export type ReplaySpeed = number | 'burst';
 /** 创建响应与状态接口映射到此类型；与当前下拉框状态独立。 */
 export interface Replay {
   id: string; // 后端 replay_id，供 GET /api/replays/{id} 轮询。
@@ -28,7 +29,7 @@ export interface Replay {
   metricsName: string;
   source: TimeRange; // 创建任务时复制的历史选区，用于查询原始请求档案。
   status: 'queued' | 'preparing' | 'running' | 'paused' | 'draining' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-  speed?: number;
+  speed?: ReplaySpeed;
   cancellable?: boolean;
   pausable?: boolean;
   resumable?: boolean;

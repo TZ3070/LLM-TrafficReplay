@@ -9,8 +9,9 @@ const task: Replay = { id:'task',modelId:'alias',modelName:'target',metricsName:
 const matrix = (result: unknown[]) => ({ status:'success',data:{resultType:'matrix',result} });
 const vector = (result: unknown[]) => ({ status:'success',data:{resultType:'vector',result} });
 
-test('cache config requires explicit counter units, validates names and preserves valid overrides', () => {
-  assert.equal(config.counterUnit,'unknown');
+test('cache config defaults to confirmed token counters and preserves explicit unit overrides', () => {
+  assert.equal(config.counterUnit,'tokens');
+  assert.equal(createReplayCacheConfig({VITE_REPLAY_CACHE_CONFIG:'{"counterUnit":"unknown"}'},15).counterUnit,'unknown');
   assert.equal(config.kvUnit,'ratio');
   assert.equal(createReplayCacheConfig({VITE_REPLAY_CACHE_CONFIG:'{"counterUnit":"tokens","kvUnit":"percent","windowSeconds":20}'},30).windowSeconds,120);
   for(const raw of ['[]','null','{"counterUnit":"bytes"}','{"kvMetric":"x or up"}','{"windowSeconds":0}','{"labels":{"__name__":"up"}}','{"unknown":true}']) assert.throws(()=>createReplayCacheConfig({VITE_REPLAY_CACHE_CONFIG:raw},15));
@@ -32,13 +33,13 @@ test('KV starts immediately, full rate windows never include pre-task traffic an
 });
 
 test('cache queries preserve instance labels, use weighted counter rates and guard stale/pre-start KV samples', () => {
-  const q=cacheQueries(task,config,1130);
+  const q=cacheQueries(task,config);
   assert(q.kv.includes('* 100')); assert(!q.kv.includes('sum('));
-  assert(q.kv.includes('timestamp(')); assert(q.kv.includes('>= 1000.75')); assert(q.kv.includes('(1130 - 30)'));
+  assert(q.kv.includes('timestamp(')); assert(q.kv.includes('>= 1000.75')); assert(q.kv.includes('(time() - 30)'));
   assert(q.hitRate.includes('100 * sum(rate(vllm:prefix_cache_hits_total'));
   assert(q.hitRate.includes('/ sum(rate(vllm:prefix_cache_queries_total'));
   assert(q.hitRate.includes('> 0')); assert(!q.hitRate.includes('avg('));
-  for(const query of Object.values(q)) { assert(query.includes('model_name="real-model"')); assert(query.includes('deployment="target-deploy"')); assert(query.includes(' @ 1130')); assert(!query.includes('replay_id')); }
+  for(const query of Object.values(q)) { assert(query.includes('model_name="real-model"')); assert(query.includes('deployment="target-deploy"')); assert(!query.includes('@')); assert(!query.includes('replay_id')); }
   assert(cacheQueries(task,{...config,kvUnit:'percent',labels:{role:'decode'}}).kv.includes('* 1'));
   assert(cacheQueries(task,{...config,labels:{role:'decode'}}).hitTokens.includes('role="decode"'));
   assert.throws(()=>cacheQueries(task,{...config,labels:{deployment:'another-deploy'}}),/冲突/);
@@ -85,12 +86,13 @@ test('cache requests respect counter units, custom routes, deduplication and ind
     const url=new URL(String(input),'http://localhost'); paths.push(url);
     const headers=new Headers(options?.headers); assert(!headers.has('Authorization')); assert(!headers.has('x-api-key'));
     const query=url.searchParams.get('query')!, range=url.pathname.endsWith('/query_range');
-    if(url.pathname.includes('tokens')&&!range&&query.includes('kv_cache')) return new Response(JSON.stringify({error:'temporary'}),{status:503});
-    if(range){
-      assert(Number(url.searchParams.get('step'))>=15);
-      assert(Number(url.searchParams.get('start')) >= task.startedAt! + (query.includes('prefix_cache')?60:0));
-    }else assert.deepEqual([...url.searchParams.keys()],['query']);
-    const stamp=Number(url.searchParams.get('start')||query.match(/ @ (\d+)/)?.[1]);
+    if(!range||query.includes('@')) return new Response(JSON.stringify({error:'Invalid query syntax'}),{status:400});
+    const current=url.searchParams.get('start')===url.searchParams.get('end');
+    if(url.pathname.includes('tokens')&&current&&query.includes('kv_cache')) return new Response(JSON.stringify({error:'temporary'}),{status:503});
+    assert(Number(url.searchParams.get('step'))>=15);
+    assert(Number(url.searchParams.get('start')) >= task.startedAt! + (query.includes('prefix_cache')?60:0));
+    if(current)assert.equal(Number(url.searchParams.get('end')),1200,'cards evaluate at the exact observation time');
+    const stamp=Number(url.searchParams.get('start'));
     const metric=query.includes('kv_cache')?{instance:'worker',engine:'0'}:{};
     const row=range?{metric,values:[[stamp,'50']]}:{metric,value:[stamp,'50']};
     return new Response(JSON.stringify({status:'success',data:{resultType:range?'matrix':'vector',result:[row]}}));
@@ -111,5 +113,30 @@ test('cache requests respect counter units, custom routes, deduplication and ind
         await fetchReplayCache(task,plan,cfg,api); assert.equal(paths.length-before,count,'successful cache queries share URL deduplication');
       }
     }
+  }finally{globalThis.fetch=originalFetch;if(originalWindow===undefined)delete(globalThis as any).window;else globalThis.window=originalWindow;}
+});
+
+test('ended cache cards use their historical observation time on a backend without @ support', async () => {
+  const originalFetch=globalThis.fetch, originalWindow=globalThis.window;
+  (globalThis as any).window={setTimeout:globalThis.setTimeout};
+  const paths:URL[]=[];
+  globalThis.fetch=async input=>{
+    const url=new URL(String(input),'http://localhost');paths.push(url);
+    if(!url.pathname.endsWith('/query_range')||url.searchParams.get('query')!.includes('@')) return new Response(JSON.stringify({error:'Invalid query syntax'}),{status:400});
+    const start=Number(url.searchParams.get('start')),end=Number(url.searchParams.get('end'));
+    const step=Number(url.searchParams.get('step')),values:[number,string][]=[];
+    for(let at=start;at<=end;at+=step)values.push([at,'42']);
+    return new Response(JSON.stringify(matrix([{metric:{instance:'worker'},values}])));
+  };
+  try{
+    const ended={...task,status:'succeeded' as const,finishedAt:1100.5};
+    const plan=replayCachePlan(ended,99999,config)!;
+    const result=await fetchReplayCache(ended,plan,config,createApiConfig({VITE_PROMETHEUS_API_PREFIX:'/api/cache-legacy'}));
+    assert.equal(result.kv.current.error,undefined);
+    assert.equal(result.kv.current.value,42);
+    assert.equal(result.kv.current.observedAt,1131);
+    assert.equal(result.kv.current.series[0].points[0].timestamp,1131);
+    assert(paths.some(url=>url.searchParams.get('start')==='1131'&&url.searchParams.get('end')==='1131'));
+    assert(paths.every(url=>Number(url.searchParams.get('end'))===1131));
   }finally{globalThis.fetch=originalFetch;if(originalWindow===undefined)delete(globalThis as any).window;else globalThis.window=originalWindow;}
 });

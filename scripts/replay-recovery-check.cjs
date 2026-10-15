@@ -67,12 +67,12 @@ const proxy=process.env.CHECK_PROXY==='1';
     await authenticate(page);
     await expect(page.locator('.recovery-banner').filter({hasText:'正在恢复回放任务'})).toHaveCount(0);
   };
-  const select=async page=>{
+  const select=async(page,speed='5')=>{
     const inputs=page.locator('.selection-form input');
     // Chrome 的分段时间控件在零秒时省略秒段；使用等价的分钟精度值。
     await inputs.first().fill((await inputs.first().getAttribute('min')).replace(/:00$/,''));
     await inputs.last().fill((await inputs.last().getAttribute('max')).replace(/:00$/,''));
-    await page.locator('#replay-speed').selectOption('5');
+    await page.locator('#replay-speed').selectOption(speed);
   };
   const begin=async page=>{
     await expect(page.getByRole('button',{name:'确认回放',exact:true})).toBeEnabled();
@@ -83,6 +83,7 @@ const proxy=process.env.CHECK_PROXY==='1';
     const {page,state}=await fixture();await enter(page);await select(page);await begin(page);
     await expect(page.locator('.replay-actions code')).toHaveText('created-1');
     assert.equal(state.creates[0].input.speed,5);
+    assert.deepEqual(Object.keys(state.creates[0].input).sort(),['end_time','model_id','speed','start_time']);
     await expect(page.locator('.task-summary')).toContainText('5×');
     await expect(page.locator('.replay-panel .load-chart')).toHaveCount(1);
     const origin=state.task.started_at;
@@ -94,6 +95,31 @@ const proxy=process.env.CHECK_PROXY==='1';
     assert.equal(state.creates.length,1,'known task reload must not POST');
     const stored=await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}));
     assert(!stored.includes('lifecycle-test'),'credentials must not persist');
+
+    const burst=await fixture();await enter(burst.page);await select(burst.page,'burst');
+    await expect(burst.page.locator('#replay-speed option:checked')).toHaveText('∞');
+    await burst.page.getByRole('button',{name:'确认回放',exact:true}).click();
+    const burstDialog=burst.page.getByRole('dialog');
+    await expect(burstDialog).toContainText('一次性发送');
+    await expect(burstDialog.getByText('∞',{exact:true})).toHaveCount(1);
+    await expect(burstDialog).not.toContainText('burst');
+    await burst.page.getByRole('button',{name:'开始回放',exact:true}).click();
+    await expect(burst.page.locator('.replay-actions code')).toHaveText('created-1');
+    assert.equal(burst.state.creates[0].input.speed,'burst');
+    assert.deepEqual(Object.keys(burst.state.creates[0].input).sort(),['end_time','model_id','speed','start_time']);
+    await expect(burst.page.locator('.task-summary')).toContainText('∞');
+    await expect(burst.page.locator('.task-summary')).not.toContainText('burst');
+    await burst.page.reload();await authenticate(burst.page);
+    await expect(burst.page.locator('.replay-actions code')).toHaveText('created-1');
+    await expect(burst.page.locator('.task-summary')).toContainText('∞');
+    assert.equal(burst.state.creates.length,1,'burst task reload must not POST');
+    await burst.page.evaluate(()=>{
+      for(const key of Object.keys(localStorage))if(key.startsWith('trafficReplay.v2.'))localStorage.removeItem(key);
+    });
+    await burst.page.reload();await authenticate(burst.page);
+    await expect(burst.page.locator('.task-summary')).toContainText('∞');
+    assert.equal(burst.state.creates.length,1,'burst active task restores without a local snapshot');
+
     for(const phase of ['preparing','queued','draining','cancelling']){
       state.task=fullTask('phase-'+phase,phase);
       await page.reload();await authenticate(page);
@@ -147,16 +173,19 @@ const proxy=process.env.CHECK_PROXY==='1';
     await expect(conflict.page.getByRole('dialog')).toHaveCount(0);
     assert.equal(conflict.state.creates.length,1);
 
-    const lost=await fixture();await enter(lost.page);await select(lost.page);lost.state.createPolicy='lost';await begin(lost.page);
-    await expect(lost.page.getByRole('dialog')).toContainText('创建回放失败');
-    const key=lost.state.creates[0].key;
-    await lost.page.reload();await authenticate(lost.page);
-    await expect(lost.page.getByRole('button',{name:'重试原创建请求',exact:true})).toBeEnabled();
-    await lost.page.getByRole('button',{name:'重试原创建请求',exact:true}).click();
-    await expect(lost.page.locator('.replay-actions code')).toHaveText('lost-response');
-    assert.equal(lost.state.creates.length,2);assert.equal(lost.state.creates[1].key,key);
-    assert.deepEqual(lost.state.creates[1].input,lost.state.creates[0].input);
+    for(const speed of ['5','burst']){
+      const lost=await fixture();await enter(lost.page);await select(lost.page,speed);lost.state.createPolicy='lost';await begin(lost.page);
+      await expect(lost.page.getByRole('dialog')).toContainText('创建回放失败');
+      const key=lost.state.creates[0].key;
+      await lost.page.reload();await authenticate(lost.page);
+      await expect(lost.page.getByRole('button',{name:'重试原创建请求',exact:true})).toBeEnabled();
+      await lost.page.getByRole('button',{name:'重试原创建请求',exact:true}).click();
+      await expect(lost.page.locator('.replay-actions code')).toHaveText('lost-response');
+      assert.equal(lost.state.creates.length,2);assert.equal(lost.state.creates[1].key,key);
+      assert.deepEqual(lost.state.creates[1].input,lost.state.creates[0].input);
+      await expect(lost.page.locator('.task-summary')).toContainText(speed==='burst'?'∞':'5×');
+    }
     assert.deepEqual(errors,[]);
-    console.log('PASS: 5x speed, running/preparing/queued/draining/cancelling refresh, curve reconstruction, finish during refresh, failed recovery/404, cancellation races/409, creation conflict and lost-response idempotency; auth='+ (proxy?'proxy':'manual'));
+    console.log('PASS: numeric and burst speed, running/preparing/queued/draining/cancelling refresh, curve reconstruction, finish during refresh, failed recovery/404, cancellation races/409, creation conflict and lost-response idempotency; auth='+ (proxy?'proxy':'manual'));
   }finally{await Promise.all(contexts.map(context=>context.close()));await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

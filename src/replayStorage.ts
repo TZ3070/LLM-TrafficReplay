@@ -1,7 +1,7 @@
-import type { Replay, TimeRange } from './types';
+import type { Replay, ReplaySpeed, TimeRange } from './types';
 import { replaySpeed, restoreReplay } from './replay';
 
-export interface ReplayBody { model_id: string; start_time: number; end_time: number; speed: number }
+export interface ReplayBody { model_id: string; start_time: number; end_time: number; speed: ReplaySpeed }
 export interface PendingReplay { key: string; signature: string; body: ReplayBody; context: Replay }
 export interface HistorySnapshot { modelId: string; seconds: number; range: TimeRange; selection?: TimeRange; historyEnd?: number; relative: boolean }
 export interface ReplaySnapshot { replay?: Replay; history?: HistorySnapshot }
@@ -16,6 +16,7 @@ function write(storage: Storage, name: string, value: unknown) {
 function validReplay(value: any): value is Replay {
   try {
     if (!value || typeof value.id !== 'string' || !value.id || typeof value.metricsName !== 'string') return false;
+    if (value.speed !== undefined && replaySpeed(value.speed) === undefined) return false;
     restoreReplay({replay_id:value.id,status:value.status,model_id:value.modelId,start_time:value.source?.start,end_time:value.source?.end});
     return true;
   } catch { return false; }
@@ -38,7 +39,7 @@ export function readPending(scope: string): PendingReplay | undefined {
   try {
     const raw=read(sessionStorage,key(scope)+'.pending');
     const b=raw?.body;
-    if(typeof raw?.key !== 'string' || !raw.key || !b || typeof b.model_id !== 'string' || !b.model_id || !Number.isFinite(b.start_time) || !Number.isFinite(b.end_time) || b.end_time <= b.start_time || !replaySpeed(b.speed) || JSON.stringify(b) !== raw.signature) return;
+    if(typeof raw?.key !== 'string' || !raw.key || !b || typeof b.model_id !== 'string' || !b.model_id || !Number.isFinite(b.start_time) || !Number.isFinite(b.end_time) || b.end_time <= b.start_time || replaySpeed(b.speed) === undefined || JSON.stringify(b) !== raw.signature) return;
     restoreReplay({replay_id:'pending',status:'queued',...b},{},{...raw.context,id:'pending'});
     return raw;
   } catch { return; }

@@ -51,7 +51,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 | src/chartTime.ts、src/time.ts | Unix 秒与图表坐标、相对时间、上海时间输入/显示之间的转换 |
 | vite.config.mjs | 本地同源请求到看板后端的代理 |
 
-演示模式使用 demoModels、固定卡片值和 demoLoad，不调用真实模型。demoLoad 一次生成整个窗口的模拟点；演示任务以 45 秒为基准按倍速缩放、每 3 秒刷新，暂停时间不计入执行时长，与历史选区时长无关。后端模式的任务状态约每 2 秒查询，指标曲线每 30 秒刷新；实际状态与时间均来自后端，没有 45 秒自动完成规则。
+演示模式使用 demoModels、固定卡片值和 demoLoad，不调用真实模型。demoLoad 一次生成整个窗口的模拟点；数字倍速的演示任务以 45 秒为基准缩放时长，`∞` 模式立即将已发送数置为总数并进入等待处理阶段，以 45 秒模拟处理完成；任务每 3 秒刷新，暂停时间不计入执行时长，与历史选区时长无关。后端模式的任务状态约每 2 秒查询，指标曲线每 30 秒刷新；实际状态与时间均来自后端，没有 45 秒自动完成规则。
 
 ## 启动
 
@@ -167,7 +167,7 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 ### 回放缓存观测（2026-10-15）
 
-“回放实时延迟”下方新增“回放缓存观测”：三张卡片（KV Cache 使用率、前缀缓存命中率、命中 token/s），一张全宽 KV 趋势图和两张并排的命中趋势图，手机端纵向排列。原有负载和两组延迟观测保持各自规则。区域显示目标模型、部署筛选标签、任务 ID/状态、完整来源历史和成功观测时间。趋势使用实际回放时间，勾选“相对时间”从实际 `started_at` 起算，tooltip 保留上海时间。
+“回放实时延迟”下方新增“回放缓存观测”：三张卡片（KV Cache 使用率、前缀缓存命中率、命中 token/s），一张全宽 KV 趋势图和两张并排的命中趋势图，手机端纵向排列。原有负载和两组延迟观测保持各自规则。区域显示目标模型、部署筛选标签、任务 ID/状态、完整来源历史和成功观测时间。趋势默认使用相对时间，横轴从实际 `started_at` 的 0 起算；取消“相对时间”可查看绝对时间，tooltip 始终保留上海时间。首个真实采样点可以晚于 0，不补造起点数据。
 
 统计口径：
 
@@ -178,10 +178,10 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 在 `.env.local` 配置（修改后重新执行 `npm run dev`）：
 
 ```dotenv
-# 默认指标名，KV 按 0~1 缩放；缓存计数单位未知，命中两项等待确认。
-VITE_REPLAY_CACHE_CONFIG='{}'
-# 检查实际 /metrics 的 HELP、vLLM 版本/实现，确认两个计数均为 token 后使用：
-# VITE_REPLAY_CACHE_CONFIG='{"counterUnit":"tokens"}'
+# 默认指标名，KV 按 0~1 缩放；当前部署已确认 hits/queries 都按 token 计数。
+VITE_REPLAY_CACHE_CONFIG='{"counterUnit":"tokens"}'
+# 其他部署的计数单位未确认时，可显式禁用命中两项：
+# VITE_REPLAY_CACHE_CONFIG='{"counterUnit":"unknown"}'
 ```
 
 完整可选配置示例（以下单位和标签须按真实部署核对，不能视为已确认）：
@@ -190,24 +190,26 @@ VITE_REPLAY_CACHE_CONFIG='{}'
 VITE_REPLAY_CACHE_CONFIG='{"kvMetric":"vllm:kv_cache_usage_perc","kvUnit":"ratio","hitsMetric":"vllm:prefix_cache_hits_total","queriesMetric":"vllm:prefix_cache_queries_total","counterUnit":"tokens","windowSeconds":60,"labels":{"role":"decode"}}'
 ```
 
-`kvUnit` 支持 `ratio`（0–1，显示时乘 100）或 `percent`（0–100）；名称带 `_perc` 不能证明是 0–100。较旧版本可能用 `vllm:gpu_cache_usage_perc`，须显式改 `kvMetric`，前端不自动混用新旧指标。`counterUnit` 为 `unknown`（默认，不查询命中两项）、`tokens`、`blocks`、`requests`。窗口取配置与真实采集间隔 4 倍的较大值，采集间隔共用 `VITE_PROMETHEUS_SCRAPE_INTERVAL_SECONDS`。`labels` 仅供缓存指标附加精确筛选，例如排除重复计数的 proxy；不能覆盖任务目标的 model_name 或部署标签，否则显示冲突错误。配置格式见 `.env.example`。
+`kvUnit` 支持 `ratio`（0–1，显示时乘 100）或 `percent`（0–100）；名称带 `_perc` 不能证明是 0–100。较旧版本可能用 `vllm:gpu_cache_usage_perc`，须显式改 `kvMetric`，前端不自动混用新旧指标。当前部署的 `counterUnit` 已确认为 `tokens`，默认启用命中率和命中 token/s；也支持显式 `unknown`（不查询命中两项）、`blocks`、`requests`。窗口取配置与真实采集间隔 4 倍的较大值，采集间隔共用 `VITE_PROMETHEUS_SCRAPE_INTERVAL_SECONDS`。`labels` 仅供缓存指标附加精确筛选，例如排除重复计数的 proxy；不能覆盖任务目标的 model_name 或部署标签，否则显示冲突错误。配置格式见 `.env.example`。
 
-KV 从实际打流开始观测，PromQL 用 `timestamp` 排除回放前 gauge 和超过两次采集间隔的陈旧样本。命中两项等待一个完整窗口，趋势第一点为 `ceil(started_at + 窗口)`，每个点都不会读取回放前计数。短任务的结束补采范围不足完整窗口时，命中指标保持空值并明确提示，不混入回放前流量。KV 不受此窗口等待限制。
+KV 从实际打流开始观测，PromQL 用 `timestamp` 排除回放前 gauge 和超过两次采集间隔的陈旧样本。收到带小数的 `started_at` 时，若尚未到首个可查询整秒，下一整秒即发起查询，不额外等待一轮 30 秒刷新；等待期间相对横轴也从 0 显示。命中两项等待一个完整窗口，趋势第一点为 `ceil(started_at + 窗口)`，每个点都不会读取回放前计数。短任务的结束补采范围不足完整窗口时，命中指标保持空值并明确提示，不混入回放前流量。KV 不受此窗口等待限制。
 
-每轮最多新增 3 条即时 query 和 3 条 query_range；默认单位未确认时仅查询 KV 的两条。即时 query 将 `@ 观测Unix秒` 写入表达式；区间请求透传 query/start/end/step，步长不小于采集间隔，约最多 301 点/序列。长任务会降采样，窄峰可能漏采；Prometheus 保留期、超时或最大区间限制仍可能影响恢复范围。空缺点绘为断点，空响应/NaN/Inf 显示空值；超范围百分比显示单位/计数器错误，不强行裁成 100%。
+每轮最多新增 6 条 query_range；显式配置未知单位时仅查询 KV 的两条。卡片用 `start=end=观测Unix秒` 的单点区间查询，趋势用完整区间，二者使用相同的无 `@` 表达式，避免旧即时查询代理返回 `HTTP 400 · Invalid query syntax`，终态卡片仍按原任务的固定时刻求值。区间请求透传 query/start/end/step，步长不小于采集间隔，趋势约最多 301 点/序列。长任务会降采样，窄峰可能漏采；Prometheus 保留期、超时或最大区间限制仍可能影响恢复范围。空缺点绘为断点，空响应/NaN/Inf 显示空值；超范围百分比显示单位/计数器错误，不强行裁成 100%。
+
+后端模式新增“缓存计数单位”选择器；核对真实指标定义后，可以为当前任务选择 token、缓存块或请求，无需重新构建。选择仅用于当前页面的任务观测，新任务或刷新页面后回到构建配置；长期默认值仍通过 `VITE_REPLAY_CACHE_CONFIG.counterUnit` 配置。未知单位保持命中两项禁用；blocks/requests 可展示命中率，仍不展示 token/s。
 
 页面刷新先恢复原任务，再查询原 `started_at` 起的完整趋势，不重新创建任务。左侧模型/时间选择不改变缓存观测目标。暂停、draining、cancelling 仍观测；终态固定在 `ceil(finished_at + 2 × 采集间隔)`，留 30 秒缓存余量并取得一轮无查询错误响应后停止，成功空结果也会停止，不能据此认定样本完整。结束后的命中卡片是固定窗口的近期值，不是任务累计值。缺少 finished_at 时继续轮询。单项卡片/趋势失败独立保留本任务最近成功数据及时间；新任务/目标变化清空旧数据，顶部“刷新指标”可重新查询。
 
 **后端与部署要求（本次不修改 Benchmark）：**
 
-1. 已有指标后端继续提供 `GET /api/prometheus/query`、`GET /api/prometheus/query_range`，透传完整 PromQL、start/end/step，缓存键包含完整参数。返回标准 Prometheus vector/matrix JSON；支持 `@`、`timestamp`、`rate` 和向量匹配。无需新增缓存专用接口，指标查询不携带 Benchmark 凭据。
+1. 缓存观测使用已有 `GET /api/prometheus/query_range`，透传完整 PromQL、start/end/step，支持 `start=end` 的单点求值，缓存键包含完整参数。返回标准 Prometheus matrix JSON；支持 `timestamp`、`time`、`rate` 和向量匹配。缓存查询不依赖 `@`；其他回放延迟查询的 `@` 要求见上节。无需新增缓存专用接口，指标查询不携带 Benchmark 凭据。
 2. Prometheus 采集实际 vLLM 的 KV gauge 和同单位 hits/queries counter，保留所需历史。确认命中率分母定义、计数单位、采集间隔、指标版本、前缀缓存是否启用；缺少指标需在 vLLM/exporter 侧补充，单改 Benchmark 无法生成 KV 数据。`rate` 处理计数器重置；空响应不等于“不支持缓存”。
 3. Benchmark 当前主要返回 `target.metrics_labels.model_name`。同模型多部署时，需在现有公共任务响应（`app/benchmark/api.py` 组装目标标签的位置）补充真实 deployment/namespace/job 等标签，并在创建/状态/活动响应保持一致；这些标签须存在于全部相关指标。本项目只记录要求，未修改 Benchmark 文件。
 4. 在采集端或 Prometheus 去除 HA 副本、重复 scrape target、proxy/worker 重复计数，或用缓存 labels 筛选唯一采集路径；前端不猜测去重。命中两项对筛选后的序列求和。严格只统计本次回放需专用部署或任务级指标，当前数据可能包含其他业务流量，不添加不存在的 replay_id 标签。
 
-验证使用模拟 HTTP，未向真实部署发流；生产使用前仍须核对实际指标/单位/标签。`node scripts/replay-cache-check.cjs` 默认验证单位未配置时的空态；使用 `VITE_REPLAY_CACHE_CONFIG='{"counterUnit":"tokens"}'` 构建后，以 `CHECK_CACHE_TOKENS=1` 运行同脚本可验证全部三项、刷新恢复、暂停/取消和终态固定历史查询。
+验证使用模拟 HTTP，未向真实部署发流；实际指标名和标签仍需与部署一致。`node scripts/replay-cache-check.cjs` 默认验证 token 计数下的全部三项、刷新恢复、暂停/取消、终态固定历史查询，以及页面内 token/blocks/unknown 单位切换。显式以 unknown 单位构建后，以 `CHECK_CACHE_TOKENS=0` 运行同脚本可验证单位未确认时的空态。
 
-本次 `npm test` 50 项通过，默认配置和 token 单位配置的构建/浏览器检查均通过；原有延迟及暂停按钮浏览器回归通过。另验证了自定义指标前缀、30 秒去重、blocks/requests 单位禁用 token/s、单项错误隔离、空结果清除、相对时间 tooltip、中英文及 320px 布局。新区域与回放延迟使用各自的 React key，避免切换模式/任务时重复挂载；图表不随约 2 秒一次的进度轮询重绘。
+本次 `npm test` 51 项通过，构建/浏览器检查均通过；原有延迟及暂停按钮浏览器回归通过。另验证了自定义指标前缀、30 秒去重、blocks/requests 单位禁用 token/s、单项错误隔离、空结果清除、相对时间 tooltip、中英文及 320px 布局。新区域与回放延迟使用各自的 React key，避免切换模式/任务时重复挂载；图表不随约 2 秒一次的进度轮询重绘。
 
 再次审查修复：顶部“刷新指标”同时重新查询右侧回放负载曲线，已停止轮询的终态任务也可刷新，仍使用原任务时间；同一任务的模型或部署标签更新时，负载、回放延迟与缓存观测清空旧数据，未完成的旧查询不会覆盖新目标。缓存趋势中的孤立样本显示采样点，避免短任务或停采间隙导致有数据却看不到曲线；缓存卡片首次查询失败时显示“查询失败 · 查看详情”。新增 `node scripts/replay-observation-review-check.cjs`，用模拟 HTTP 验证部署更新、旧响应隔离、首次失败空态、单点曲线、终态手动刷新和页面刷新后的原任务时间恢复。手动刷新仍遵守已有 30 秒指标缓存，实际更新还受后端缓存与采集间隔影响。
 
@@ -260,7 +262,7 @@ VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 - 模型发现：`src/data.ts` 的 `fetchModels` / `parseModelVector`，从即时查询的 `model_name` 标签生成下拉项；`adaptModels` 保留为旧 LiteLLM 适配函数，首页不再调用它。回放后端需能识别该模型名，或配置一对一的 `VITE_MODEL_METRICS_MAP`。
 - 指标清单和 PromQL 在 `src/data.ts` 的 `loadQueries`、`metricQueries`。TTFT/E2E/ITL/QT 使用 `rate(_sum[窗口]) / rate(_count[窗口])`，TPOT 使用上述解码耗时与生成 token 的特殊比值，共五条独立即时 query。模型标签来自当前下拉框，窗口来自历史查询范围；指标名可用 `VITE_PROMETHEUS_METRIC_NAMES` 覆盖。卡片数值是 Prometheus 即时查询在该回溯窗口内的 rate 结果，不是 query_range 曲线的前端平均。
 - 负载曲线：`sum by (model_name) (vllm:num_requests_running{model_name="所选模型"})` 和对应的 `num_requests_waiting`，在 Prometheus 汇总全部 engine 和 role。历史与回放各展示一条处理曲线、一条等待曲线；回放返回的部署标签仍用于筛选目标。前端直接绘制总值，不再平均。DeepSeek 的 proxy/prefill/decode 总和表示各阶段负载总和；若 proxy 和 worker 同时记录同一请求，该值不等于去重后的用户请求数。该口径不依赖 `VITE_MIXED_LATENCY_ROLE_MODELS`，普通模型同样汇总全部 engine。
-- 回放创建默认 `POST /api/replays`，请求体 `{ model_id, start_time, end_time, speed }`，Unix 秒，左闭右开。返回 `{ replay_id, status, started_at?, request_count?, target?: { metrics_labels } }`。
+- 回放创建默认 `POST /api/replays`，请求体 `{ model_id, start_time, end_time, speed }`，Unix 秒，左闭右开。`speed` 为正数或精确字符串 `"burst"`；界面选择 `∞` 时发送 `"burst"`，数字选项仍发送 number。返回 `{ replay_id, status, started_at?, request_count?, target?: { metrics_labels } }`。
 - 状态接口默认 `GET /api/replays/{id}`，返回 `{ status, started_at?, finished_at?, request_count?, sent_count?, completed_count?, failed_count?, skipped_count?, progress?, error?, target?: { metrics_labels } }`。状态支持 queued/preparing/running/draining/cancelling/succeeded/failed/cancelled；取消按钮依据 `cancellable` 启用，接受取消后继续轮询直到终态。`finished_at` 为全部请求处理完成时间。创建、状态、活动、取消路径分别通过 VITE_REPLAY_CREATE_PATH / VITE_REPLAY_STATUS_PATH / VITE_REPLAY_ACTIVE_PATH / VITE_REPLAY_CANCEL_PATH 配置。
 - 接口尚未与真实部署的 LiteLLM、SpendLogs 和 Prometheus 完成联调；已使用当前 Benchmark HTTP 接口及模拟数据做隔离验证。创建回放响应缺少 replay_id 会明确报错。未知实际开始时间时，前端不会用点击时间替代。
 
@@ -268,16 +270,19 @@ VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 
 ## 当前 Benchmark 对接检查与缺口
 
-2026-10-14 检查本项目和 `D:\ai_workspace\Benchmark` 的代码：基础接口协议兼容，但本地配置尚未接入独立 Benchmark，后端也尚未应用本仓库的 [兼容补丁](integration/benchmark-replay.patch)。以下为此次检查时的状态，应用补丁或调整配置后应重新验证。
+2026-10-15 按拉取后的 `D:\ai_workspace\Benchmark` 当前提交 `ef22cd2`（包含 `60e2cd0` 的 burst 实现）复核：创建、状态、活动任务、幂等和基础计数字段兼容，当前 Benchmark 已原生支持数字倍速和 `speed: "burst"`，但本地配置尚未接入独立 Benchmark，兼容补丁中的其余能力也未全部合入。以下为此次检查时的状态，调整配置或移植缺失能力后应重新验证。
 
 | 缺口 | 当前行为及影响 | 补齐方式 |
 | --- | --- | --- |
 | 独立回放地址未配置 | 前端 `.env.local` 仅设置 `BACKEND_URL=http://127.0.0.1:3000`，未设置 `REPLAY_BACKEND_URL`，因此回放请求也发往 3000。 | 将 `REPLAY_BACKEND_URL` 设置为 Vite/生产代理能够访问的 Benchmark 地址；指标继续使用原 `BACKEND_URL`。 |
-| 任务响应缺少 `speed`、`revision` | Benchmark 内部保存并使用倍速，但 `app/benchmark/api.py` 的公共响应未返回这两个字段。同一浏览器刷新可沿用本地倍速，没有本地记录时恢复任务显示“倍速未知”；前端不能按版本号拒绝旧响应。 | 应用补丁，使任务公共响应包含倍速和随持久化更新递增的版本号。 |
-| `view=status` 未提供轻量响应 | 活动/状态接口忽略该参数，仍返回全部逐请求 `results`；约每 2 秒的轮询会反复下载结果文本，任务越大响应越重。 | 应用补丁，使 `?view=status` 省略 `results`，保留原完整查询接口。 |
-| 后端实际指标标签映射未实现 | 公共响应直接用目标模型名作为 `model_name`，当前后端不读取 `BENCHMARK_MODEL_METRICS_MAP`。LiteLLM 别名与指标名不同时，未配置映射的曲线查询可能为空。 | 当前可配置前端一对一 `VITE_MODEL_METRICS_MAP`；应用补丁后，也可配置后端 `BENCHMARK_MODEL_METRICS_MAP`，由任务返回实际指标标签。 |
-| 取消与调度提交存在竞态 | `app/benchmark/core.py` 在取消检查和线程池提交之间未使用同一把锁，已复现取消受理后仍可提交请求；状态更新也缺少取消中/终态保护。 | 应用补丁，使取消受理与提交共用锁，并阻止状态回退；已提交的请求仍等待处理结束。 |
-| 没有暂停/继续接口 | 当前 Benchmark 不提供 `/pause`、`/resume` 和暂停能力字段。前端已接入按钮，但旧后端下按钮禁用，不会把停止抓取曲线当成暂停打流。 | 在兼容补丁之后应用 [暂停补丁](integration/benchmark-pause.patch)，实现下文的接口与调度语义。 |
+| 任务响应缺少 `revision` | Benchmark 已原样返回创建时的数字倍速或 `"burst"`，但公共响应没有递增版本号；前端不能按版本号拒绝迟到的旧响应。 | 将兼容补丁中的任务版本能力移植到当前 Benchmark。 |
+| `view=status` 未提供轻量响应 | 活动/状态接口忽略该参数，隔离验证中两者均返回注入的全部 1,000 条 `results`；约每 2 秒的轮询会反复下载结果文本，任务越大响应越重。 | 移植兼容补丁中的轻量响应能力，使 `?view=status` 省略 `results`，保留原完整查询接口。 |
+| 后端实际指标标签映射未实现 | 公共响应直接用目标模型名作为 `model_name`；隔离验证配置 `BENCHMARK_MODEL_METRICS_MAP={"alias":"real-model"}` 后仍返回 alias。LiteLLM 别名与指标名不同时，未配置映射的曲线查询可能为空。 | 当前可配置前端一对一 `VITE_MODEL_METRICS_MAP`；或移植后端映射能力，由任务返回实际指标标签。 |
+| 取消与调度提交存在竞态 | `app/benchmark/core.py` 在取消检查和线程池提交之间未使用同一把锁；在该间隙插入真实 HTTP 取消后，接口已返回 202/cancelling，调度线程仍提交了一个请求。状态更新也缺少取消中/终态保护。 | 移植兼容补丁中的原子提交与状态保护，使取消受理与提交共用锁；已提交的请求仍等待处理结束。 |
+| 没有暂停/继续接口 | 隔离验证中 `/pause`、`/resume` 均返回 404，任务没有暂停能力字段。前端按钮按能力禁用。 | 参考 [暂停补丁](integration/benchmark-pause.patch) 移植接口与调度能力，不能直接套用旧补丁。 |
+| burst 未及时进入 draining | `run_replay` 的突发循环等待所有在途请求结束后才退出；隔离验证中 total=2、sent=2、completed=0 时仍返回 running，`dispatch_finished` 尚未置位。前端会继续显示“回放中”，通常观察不到独立的等待响应阶段。 | 最后一个请求提交后即设置 draining/dispatch_finished，再等待在途响应；终态仍以全部处理结束为准。 |
+
+当前 Benchmark 已精确识别 `speed: "burst"`，内部使用突发调度并在公共任务响应中继续返回 `"burst"`。突发模式取消历史请求间隔，按 `BENCHMARK_MAX_WORKERS` 并发上限持续提交请求；它不会绕过线程池或上游容量限制。
 
 两个服务与 Vite 同机时，前端 `.env.local` 可按下面配置；部署到不同机器或容器时，地址应改为代理实际可访问的地址。修改后重新运行 `npm run dev`：
 
@@ -289,18 +294,11 @@ VITE_REPLAY_AUTH_MODE=manual
 
 Benchmark 不提供 `/api/prometheus/query` 和 `/api/prometheus/query_range`，这两个接口继续由已有看板后端实现。创建请求中的 `model_id` 同时作为源模型和目标模型，因此它必须能够匹配 SpendLogs 中的源模型和 LiteLLM 可用模型；实际名称需用部署数据确认。
 
-隔离验证已通过创建、幂等重试、进度条更新、刷新重建曲线、无本地记录时恢复活动任务、普通取消，以及前端提供的全部五种倍速。验证使用当前 Benchmark HTTP 接口、真实 Vite 分流代理、模拟准备过程及指标，没有发送真实推理流量。完整补丁契约检查在当前后端上因响应缺少 `speed` 失败；在临时副本中应用补丁后全部通过。此次检查时，本机 3000/8088 未响应，未验证真实部署的数据链路。
+隔离验证覆盖创建、幂等重试、进度条更新、刷新重建曲线、无本地记录时恢复活动任务、普通取消、五种数字倍速及 `∞`。当前 Benchmark 的完整兼容性脚本在指标映射断言处失败；逐项隔离验证另确认上述轻量响应、暂停/继续、取消竞态、版本号和 burst 状态缺口。Vite 双后端分流与认证透传检查通过。验证使用临时任务库、本地 HTTP 和模拟工作线程，不发送真实推理流量，也未验证真实部署的数据链路。
 
-补丁已在此次检查的 Benchmark 版本上通过应用检查。执行前先检查该仓库本地改动，下面的命令只应用源代码补丁，不会自动更新正在运行的服务或已有 Docker 镜像：
+`integration/benchmark-replay.patch` 基于较早的 Benchmark 版本，不能直接应用到当前 `main`。需要从补丁中选择尚未合入的能力并移植到当前代码，完成代码审查和隔离验证后再重启服务或重建镜像；不要直接执行 `git apply`。
 
-```powershell
-Set-Location D:\ai_workspace\Benchmark
-git status --short
-git apply --check ..\llm-dashboard\integration\benchmark-replay.patch
-git apply ..\llm-dashboard\integration\benchmark-replay.patch
-```
-
-应用后需要重启 Python 服务；Docker 部署需要重新构建并部署更新后的镜像。后端完整契约可从本项目前端目录执行 `python scripts/benchmark-replay-check.py D:/ai_workspace/Benchmark` 验证，该脚本使用临时状态库和模拟执行，不发送真实推理请求。
+后端完整契约可从本项目前端目录执行 `python scripts/benchmark-replay-check.py D:/ai_workspace/Benchmark` 验证。该脚本使用临时状态库和模拟执行，不发送真实推理请求；只有检查通过的后端版本才能视为满足完整契约。
 
 ## 限制
 
@@ -314,7 +312,11 @@ TypeScript 与生产构建通过；37 项解析、接口配置、缓存、模型
 
 ## 倍速、暂停、取消与刷新恢复
 
-创建前选择 0.5× / 1× / 2× / 5× / 10×，默认 1×。倍速缩放请求发送间隔，创建后的任务参数固定，不能运行中改速。状态返回 `speed`；旧后端未知倍速显示“倍速未知”，不默认显示原速。
+创建前选择 0.5× / 1× / 2× / 5× / 10× / `∞`，默认 1×。数字倍速缩放请求发送间隔；选择 `∞` 时前端仍只发送原有四个字段，其中 `speed` 为字符串 `"burst"`，后端忽略历史请求间隔并尽快提交所选区间的全部请求。线程池并发仍受后端上限约束，因此 `∞` 表示取消历史节奏。创建后的任务参数固定，不能运行中改速。状态原样返回 `speed`；旧后端未知倍速显示“倍速未知”，不默认显示原速。
+
+前端类型为 `ReplaySpeed = number | 'burst'`，这只扩展允许的值，原有数字请求格式不变。选择框、确认弹窗和任务摘要均将 `burst` 显示为 `∞`；刷新恢复和未确认请求的幂等重试保留原值。演示模式立即进入 draining，已发送数等于总数，随后等待模拟处理完成。
+
+真实打流需要后端同步支持。当前 `D:\ai_workspace\Benchmark` 的 `main` 已保留数字倍速原有解析行为，精确识别 `"burst"`，并在幂等指纹和公共任务响应中保留突发模式。调度器不再等待历史请求间隔，而是在并发槽位空闲时继续提交；全部请求处理结束后才进入终态。部署仍需包含这版实现并在更新后重启服务或重建镜像。
 
 进入后端模式并有认证后，先请求 `GET /api/replays/active?view=status`；有活动任务则恢复，没有则用本地保存的最后 ID 请求 `GET /api/replays/{replay_id}?view=status`，覆盖刷新期间刚完成的情况。恢复失败阻止创建，可手动重试。创建遇到 `409 + active_task` 时展示该任务。恢复已知任务只 GET，不重新打流，也不需要重新填写倍速或幂等键。
 
@@ -327,6 +329,7 @@ TypeScript 与生产构建通过；37 项解析、接口配置、缓存、模型
 | `replay_id`、`status` | 确认任务身份及状态，继续查询该任务进度。 |
 | `model_id` 或 `target_model`、`source_model` | 恢复目标及源模型；未返回 `source_model` 时前端按同一模型处理。 |
 | `start_time`、`end_time` | 原历史选区的 Unix 秒时间戳，用于恢复左侧历史窗口。 |
+| `speed` | 创建时固定的正数或 `"burst"`；前端分别恢复为数字倍速或 `∞`。 |
 | `started_at` | 实际打流开始时间，Unix 秒；回放曲线从此处开始，不使用原历史选区的起点。尚未实际开始时可以省略。 |
 | `target.metrics_labels` | 实际 Prometheus 模型和部署标签，优先用于筛选回放曲线；未提供时使用前端模型映射或模型名。 |
 | `progress.ready`、`progress.total`、`progress.completed` | 展示准备状态、“已完成 / 总请求”和进度条；兼容旧字段 `request_count`、`completed_count`。 |
@@ -395,19 +398,9 @@ VITE_REPLAY_RESUME_PATH=/api/replays/{id}/resume
 | `app/benchmark/core.py`：`run_replay` | Condition 等待暂停/继续/取消，单调时钟扣除暂停时长，保留剩余调度间隔；最后一次提交与 draining 状态切换原子完成。 |
 | `app/benchmark/core.py`：`register_job`、`initialize_state_db`、`update_job` | paused 阻止新任务、重启时标记失败、阻止后台状态更新撤销暂停或取消。 |
 
-[暂停补丁](integration/benchmark-pause.patch) 必须应用在 [兼容补丁](integration/benchmark-replay.patch) 之后。两份补丁已在本项目内的 Benchmark 临时副本上验证，不会自动修改外部项目。将来由后端维护方应用时，先检查本地改动和版本：
+[暂停补丁](integration/benchmark-pause.patch) 依赖 [兼容补丁](integration/benchmark-replay.patch) 中的状态保护与轻量响应能力。两份补丁基于较早的 Benchmark 版本，旧版临时副本的验证结果不代表可以直接应用到当前 `ef22cd2`。后端维护方应先移植缺失的基础能力，再移植暂停逻辑，同时保留当前数字倍速和 burst 调度分支；不要直接执行旧 `git apply` 命令。
 
-```powershell
-Set-Location D:\ai_workspace\Benchmark
-git status --short
-# 兼容补丁若已应用，跳过下面两行；不要重复应用。
-git apply --check ..\llm-dashboard\integration\benchmark-replay.patch
-git apply ..\llm-dashboard\integration\benchmark-replay.patch
-git apply --check ..\llm-dashboard\integration\benchmark-pause.patch
-git apply ..\llm-dashboard\integration\benchmark-pause.patch
-```
-
-随后重启 Benchmark；Docker 需重建并部署后端镜像。保持旧 Benchmark 不变时，原有回放/普通取消仍可用，但不能暂停，取消与调度竞态也仍存在：取消受理后仍可能额外提交请求，严格保证必须由兼容补丁修复，前端无法替代。
+移植完成并通过后端隔离检查后再重启 Benchmark；Docker 需重建并部署后端镜像。保持当前 Benchmark 不变时，原有回放/普通取消仍可用，但不能暂停，取消与调度竞态也仍存在：取消受理后仍可能额外提交请求，严格保证需要后端修复，前端无法替代。
 
 点击“取消回放”的完整流程：
 
@@ -462,6 +455,6 @@ BENCHMARK_API_KEY=实际Benchmark密钥
 
 这里的 `BENCHMARK_API_KEY` 为与 Benchmark 一致的原始密钥，不加 `Bearer`；地址示例假设 Benchmark 与 Vite 同机。Vite 服务端仅向回放路由注入 `Authorization: Bearer 实际密钥`，密钥不进入浏览器构建，也不附加到 Prometheus 请求。仅在前端 `.env.local` 设置密钥、却继续使用 `manual` 模式，不会自动认证。Vite 绑定本机回环地址。生产静态站点必须在已有受控、带访问认证的同源反向代理中对回放路由注入该头；构建参数不会自动创建生产代理或用户会话，不能把携带服务密钥的代理公开成无认证接口。
 
-应用 `integration/benchmark-replay.patch` 后，Benchmark 的公共响应支持 `speed`/`revision`、轻量状态、取消与提交的原子互斥；LiteLLM 别名不同于实际 vLLM 标签时，可配置 `BENCHMARK_MODEL_METRICS_MAP`。此次检查的本地 Benchmark 尚未应用补丁，具体影响见“当前 Benchmark 对接检查与缺口”。浏览器刷新不停止后端任务；Benchmark 进程重启仍会使活动任务失败，未增加断点续跑。
+当前 Benchmark 已原生返回数字或 burst 的 `speed`；递增 `revision`、轻量状态、取消与提交的原子互斥、后端 `BENCHMARK_MODEL_METRICS_MAP` 仍需按当前代码移植，旧兼容补丁仅作为参考。具体影响见“当前 Benchmark 对接检查与缺口”。浏览器刷新不停止后端任务；Benchmark 进程重启仍会使活动任务失败，未增加断点续跑。
 
 验证命令：`npm run build`、`npm test`、`node scripts/replay-recovery-check.cjs`、`node scripts/replay-edge-check.cjs`、`node scripts/replay-progress-check.cjs`、`node scripts/proxy-check.cjs`。浏览器检查默认使用本地 4173 预览服务。后端隔离验证：`python scripts/benchmark-replay-check.py D:/ai_workspace/Benchmark`，只使用临时任务库和本地模拟请求，不访问真实模型。

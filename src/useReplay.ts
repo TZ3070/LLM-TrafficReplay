@@ -94,10 +94,10 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
       try{
         let raw;
         if(mode==='demo'){
-          const duration=45/(previous.speed || 1),elapsed=Math.max(0,(previous.pausedAt ?? Date.now()/1000)-(previous.startedAt || 0)-(previous.pausedSeconds || 0));
+          const replaySpeed=previous.speed,burst=replaySpeed==='burst',duration=replaySpeed==='burst'?45:45/(replaySpeed ?? 1),elapsed=Math.max(0,(previous.pausedAt ?? Date.now()/1000)-(previous.startedAt || 0)-(previous.pausedSeconds || 0));
           raw=previous.status==='cancelling'?{status:'cancelled',finished_at:Date.now()/1000,cancellable:false}
             : previous.status==='paused'?{status:'paused',pausable:false,resumable:true}
-            : {status:elapsed>=duration?'succeeded':elapsed>=duration*.89?'draining':'running',sent_count:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/(duration*.89))),completed_count:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/duration)),finished_at:elapsed>=duration?(previous.startedAt || 0)+duration+(previous.pausedSeconds || 0):undefined,cancellable:elapsed<duration,pausable:elapsed<duration*.89,resumable:false};
+            : {status:elapsed>=duration?'succeeded':burst||elapsed>=duration*.89?'draining':'running',sent_count:burst?previous.requestCount || 0:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/(duration*.89))),completed_count:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/duration)),finished_at:elapsed>=duration?(previous.startedAt || 0)+duration+(previous.pausedSeconds || 0):undefined,cancellable:elapsed<duration,pausable:!burst&&elapsed<duration*.89,resumable:false};
         } else raw=await request(lightweight(taskPath(paths.status,id)),{},authRef.current);
         const latest=replayRef.current;
         if(!live||epoch.current!==token||latest?.id!==id)return;
@@ -129,7 +129,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
     const token=epoch.current,retrying=mode==='backend'&&pendingRef.current?.key===op.key;
     try{
       if(mode==='backend')setOperation(op);
-      const raw=mode==='demo'?{replay_id:`demo-${crypto.randomUUID()}`,status:'running',started_at:Date.now()/1000,request_count:Math.round((op.body.end_time-op.body.start_time)*2.8),sent_count:0,completed_count:0,cancellable:true,pausable:true,resumable:false,paused_seconds:0,speed:op.body.speed}:await request(paths.create,{method:'POST',headers:{'Idempotency-Key':op.key},body:op.signature},authRef.current);
+      const raw=mode==='demo'?{replay_id:`demo-${crypto.randomUUID()}`,status:op.body.speed==='burst'?'draining':'running',started_at:Date.now()/1000,request_count:Math.round((op.body.end_time-op.body.start_time)*2.8),sent_count:op.body.speed==='burst'?Math.round((op.body.end_time-op.body.start_time)*2.8):0,completed_count:0,cancellable:true,pausable:op.body.speed!=='burst',resumable:false,paused_seconds:0,speed:op.body.speed}:await request(paths.create,{method:'POST',headers:{'Idempotency-Key':op.key},body:op.signature},authRef.current);
       if(epoch.current!==token)return;
       adopt(raw,false,op.context);if(mode==='backend')setOperation(undefined);
     }catch(e){

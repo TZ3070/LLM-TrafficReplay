@@ -13,7 +13,7 @@ import { useReplay } from './useReplay';
 import { relativeTimeUnit } from './chartTime';
 import { DISPLAY_TIME_ZONE, clock, dateTime, fullDateTime, toInput, fromInput } from './time';
 import { demoLoad, demoModels, emptyMetrics, fetchModels, fetchLoad, fetchMetrics, formatValue, MODEL_DISCOVERY_QUERY, promDuration, queryTiming, retainFailedLoad } from './data';
-import type { LoadData, Metrics, Model, Replay, TimeRange } from './types';
+import type { LoadData, Metrics, Model, Replay, ReplaySpeed, TimeRange } from './types';
 import { createApiConfig } from './apiConfig';
 import { localizeMessage, readLanguage, rememberLanguage, translate, type Language } from './i18n';
 /**
@@ -82,7 +82,7 @@ export default function App() {
   const [authSettings,setAuthSettings]=useState({apiKey:'',authHeader:'Authorization' as 'x-litellm-key'|'x-api-key'|'Authorization'});
   const [settingsToken,setSettingsToken]=useState(0);
   const [relative,setRelative]=useState(saved.history?.relative || false); // 只控制横轴展示，不改变查询边界或打流速度。
-  const [speed,setSpeed]=useState(1);
+  const [speed,setSpeed]=useState<ReplaySpeed>(1);
   const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:API.modelMetricsMap});
   const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,controlling,restoredId}=replayController;
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
@@ -248,7 +248,7 @@ export default function App() {
             <div className="selection-form">
               <div className="selection-title"><span><span className="selection-dot"/>{t('回放时间区间')}</span>{selection&&<button onClick={()=>setSelection(undefined)}>{t('清除选区')}</button>}</div>
               <div className="time-inputs"><label>{t('开始时间')}<input type="datetime-local" step="1" value={selection?toInput(selection.start):''} min={toInput(range.start)} max={toInput(range.end)} onChange={e=>changeInput('start',e.target.value)}/></label><span className="time-arrow">→</span><label>{t('结束时间')}<input type="datetime-local" step="1" value={selection?toInput(selection.end):''} min={toInput(range.start)} max={toInput(range.end)} onChange={e=>changeInput('end',e.target.value)}/></label></div>
-              <label className="speed-field" htmlFor="replay-speed">{t('回放倍速')}<select id="replay-speed" value={speed} onChange={event=>setSpeed(Number(event.target.value))} disabled={submitting||!!pending}>{[.5,1,2,5,10].map(value=><option key={value} value={value}>{value}×</option>)}</select><span>{t('倍速调整请求间隔，任务开始后保持不变。')}</span></label>
+              <label className="speed-field" htmlFor="replay-speed">{t('回放倍速')}<select id="replay-speed" value={speed} onChange={event=>setSpeed(event.target.value==='burst'?'burst':Number(event.target.value))} disabled={submitting||!!pending}>{[.5,1,2,5,10].map(value=><option key={value} value={value}>{value}×</option>)}<option value="burst">∞</option></select><span>{t(speed==='burst'?'忽略历史请求间隔，一次性发送所选区间的全部请求。':'倍速调整请求间隔，任务开始后保持不变。')}</span></label>
               <div className="selection-footer"><span>{selection?validSelection?t('已选择 {minutes} 分 {seconds} 秒',{minutes:Math.floor((selection.end-selection.start)/60),seconds:Math.round((selection.end-selection.start)%60)}):t('请选择窗口内有效的开始与结束时间'):t('在折线图中拖动，或输入时间')}<small>{t('时间范围包含起点，不包含终点')}</small></span><button className="button primary" onClick={()=>setConfirmOpen(true)} disabled={!validSelection||!canCreate||!!model?.replayError}><Play size={14}/>{t(active?'回放进行中':'确认回放')}</button></div>
             </div>
           </section>
@@ -263,7 +263,7 @@ export default function App() {
                 <p>{replay.startedAt!==undefined?t('等待回放指标'):replay.requestCount===0?t('此选区没有可回放请求'):isTerminalReplay(replay.status)?t('任务已结束，未开始打流'):replay.requestCount!==undefined?t('已准备 {count} 个请求 · 等待实际打流开始',{count:formatValue(replay.requestCount,0,language)}):t('正在准备请求，统计总数')}</p>
               </div>}
               {replayData.errors.length>0&&<div className="chart-error">{replayData.errors.map(message).join(language==='zh'?'；':'; ')}</div>}
-              <div className="task-summary"><div><span>{t('历史区间')}</span><strong>{clock(replay.source.start)} — {clock(replay.source.end)}</strong></div><div><span>{t('回放规则')}</span><strong>{replay.speed!==undefined?t('{speed}× · 按历史间隔调度',{speed:replay.speed}):t('倍速未知')}</strong></div></div>
+              <div className="task-summary"><div><span>{t('历史区间')}</span><strong>{clock(replay.source.start)} — {clock(replay.source.end)}</strong></div><div><span>{t('回放规则')}</span><strong>{replay.speed==='burst'?'∞':replay.speed!==undefined?t('{speed}× · 按历史间隔调度',{speed:replay.speed}):t('倍速未知')}</strong></div></div>
               <div className="replay-actions"><code title={replay.id}>{replay.id}</code>{active&&<>
                 <button className="button secondary pause-replay" disabled={!ready||cancelling||!!controlling||(replay.status==='paused'?!replay.resumable:!replay.pausable)} onClick={()=>void (replay.status==='paused'?replayController.resume():replayController.pause())}>
                   {controlling?<LoaderCircle size={14} className="spin"/>:replay.status==='paused'?<Play size={14}/>:<Pause size={14}/>}{t(controlling==='pause'?'正在提交暂停…':controlling==='resume'?'正在提交继续…':replay.status==='paused'?'继续回放':'暂停回放')}
@@ -273,7 +273,7 @@ export default function App() {
               {active&&mode==='backend'&&replay.pausable===undefined&&<div className="replay-caption">{t('当前后端未提供暂停能力，请更新 Benchmark。')}</div>}
               {replay.status==='cancelling'&&<div className="replay-caption">{t('已提交的请求仍可能完成；取消期间继续更新进度。')}</div>}
               <div className="replay-caption">{t('已完成包含处理结束的失败请求；任务结果以状态为准。')}</div>
-              <div className="replay-caption">{t(mode==='demo'?'模拟回放，时长随倍速调整；曲线不代表真实优化效果。':'实例指标可能包含其他流量；回放尾部指标受采集和缓存延迟影响。')}</div>
+              <div className="replay-caption">{t(mode==='demo'?replay.speed==='burst'?'模拟回放，一次性发送全部请求并等待处理完成；曲线不代表真实优化效果。':'模拟回放，时长随倍速调整；曲线不代表真实优化效果。':'实例指标可能包含其他流量；回放尾部指标受采集和缓存延迟影响。')}</div>
             </>}
             {!replay&&<div className="replay-empty"><div className="empty-orbit"><Activity size={28}/><span className="orbit-dot"/></div><h4>{t('让历史流量，再跑一次')}</h4><p>{t('在左侧选定时间区间并确认回放。')}<br/>{t('该模型的新处理与等待曲线将在这里展示。')}</p><div className="empty-steps"><span><span>1</span>{t('选择区间')}</span><span className="step-line"/><span><span>2</span>{t('确认回放')}</span><span className="step-line"/><span><span>3</span>{t('观察效果')}</span></div><div className="empty-tip"><Check size={14}/>{t('切换查询模型不会改变已创建的回放任务')}</div></div>}
           </section>
@@ -288,7 +288,7 @@ export default function App() {
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>
-    {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label={t('关闭')} disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">{t('确认回放历史流量')}</h2><p>{t('将所选时间段的请求按所选倍速发送给该模型当前部署。')}</p><dl><dt>{t('模型')}</dt><dd>{model?.name}</dd><dt>{t('开始时间')}</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>{t('结束时间')}</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>{t('回放倍速')}</dt><dd>{speed}×</dd><dt>{t('模式')}</dt><dd>{t(mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求')}</dd></dl>{(error||actionError)&&<div className="chart-error" role="alert">{message(actionError||error)}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>{t('取消')}</button><button className="button primary" disabled={submitting||!ready||active} onClick={()=>pending?void replayController.retryPending():void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}{t('开始回放')}</button></div></section></div>}
+    {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label={t('关闭')} disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">{t('确认回放历史流量')}</h2><p>{t(speed==='burst'?'将所选时间段的全部请求一次性发送给该模型当前部署。':'将所选时间段的请求按所选倍速发送给该模型当前部署。')}</p><dl><dt>{t('模型')}</dt><dd>{model?.name}</dd><dt>{t('开始时间')}</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>{t('结束时间')}</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>{t('回放倍速')}</dt><dd>{speed==='burst'?'∞':`${speed}×`}</dd><dt>{t('模式')}</dt><dd>{t(mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求')}</dd></dl>{(error||actionError)&&<div className="chart-error" role="alert">{message(actionError||error)}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>{t('取消')}</button><button className="button primary" disabled={submitting||!ready||active} onClick={()=>pending?void replayController.retryPending():void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}{t('开始回放')}</button></div></section></div>}
     {settingsOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close icon-button" aria-label={t('关闭')} onClick={()=>setSettingsOpen(false)}><X size={19}/></button><h2 id="settings-title">{t('后端连接设置')}</h2>
       <p>{t('模型指标使用 BACKEND_URL；回放可单独配置 REPLAY_BACKEND_URL。修改 .env.local 后重新运行 npm run dev。')}</p>
       {PROXY_AUTH?<p className="settings-note">{t('回放认证由同源服务端代理提供，刷新后自动恢复。')}</p>:<>

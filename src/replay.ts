@@ -1,4 +1,4 @@
-import type { Replay } from './types';
+import type { Replay, ReplaySpeed } from './types';
 
 const STATUSES = new Set<Replay['status']>(['queued','preparing','running','paused','draining','cancelling','succeeded','failed','cancelled']);
 
@@ -23,7 +23,8 @@ function capability(value: unknown, previous: boolean | undefined, eligible: boo
   return supported === undefined ? undefined : eligible && supported;
 }
 
-export function replaySpeed(value: unknown): number | undefined {
+export function replaySpeed(value: unknown): ReplaySpeed | undefined {
+  if (value === 'burst') return value;
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 

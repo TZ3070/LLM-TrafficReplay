@@ -3,19 +3,28 @@ const {chromium,expect}=require('@playwright/test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
-const tokens=process.env.CHECK_CACHE_TOKENS==='1';
+const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
 
 (async()=>{
   const browser=await chromium.launch({executablePath:process.env.CHECK_CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
   try{
     const page=await browser.newPage({viewport:{width:1440,height:1100}});
+    await page.addInitScript(()=>{
+      window.cacheAxisLabels=[];
+      const fillText=CanvasRenderingContext2D.prototype.fillText;
+      CanvasRenderingContext2D.prototype.fillText=function(text,...args){
+        const chart=this.canvas.closest('[data-cache-chart]');
+        if(chart)window.cacheAxisLabels.push({chart:chart.dataset.cacheChart,text:String(text)});
+        return fillText.call(this,text,...args);
+      };
+    });
     const errors=[],queries=[],posts=[];
     page.on('pageerror',error=>errors.push(error.message));
     page.on('console',message=>{if(/same key|unique.*key/i.test(message.text()))errors.push(message.text());});
     const now=Math.floor(Date.now()/1000);
     await page.clock.install({time:new Date(now*1000)});
     let task={replay_id:'cache-task',model_id:'model-a',source_model:'model-a',target_model:'model-a',status:'preparing',speed:2,cancellable:true,pausable:false,resumable:false,revision:1,start_time:now-1200,end_time:now-600,request_count:20,sent_count:0,completed_count:0,target:{metrics_labels:{model_name:'model-v2',deployment:'replay-deploy'}}};
-    let failKV=false,emptyRate=false,missingKV=false;
+    let failKV=false,emptyRate=false,missingKV=false,confirmedTokens=tokens;
     await page.route('**/api/**',async route=>{
       const req=route.request(),url=new URL(req.url());let body,status=200;
       if(url.pathname.startsWith('/api/prometheus/')){
@@ -23,13 +32,14 @@ const tokens=process.env.CHECK_CACHE_TOKENS==='1';
         const query=url.searchParams.get('query'),isRange=url.pathname.endsWith('/query_range');
         const key=query.includes('kv_cache_usage_perc')?'kv':query.includes('prefix_cache_queries_total')?'hitRate':query.includes('prefix_cache_hits_total')?'hitTokens':undefined;
         if(key){
-          const at=Number(query.match(/ @ (\d+)/)?.[1]||url.searchParams.get('end'));
+          // Reproduce a proxy that rejects @ in instant queries, while accepting range queries.
+          if(!isRange||query.includes('@')){await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'Invalid query syntax'})});return;}
+          const at=Number(url.searchParams.get('end'));
           const start=Number(url.searchParams.get('start')),end=Number(url.searchParams.get('end')),step=Number(url.searchParams.get('step'));
           queries.push({key,query,isRange,at,start,end,step});
           assert(query.includes('model_name="model-v2"'));assert(query.includes('deployment="replay-deploy"'));
-          if(key!=='kv')assert(tokens,'unknown counter units must not be queried');
-          if(isRange){assert(start>=Math.ceil(task.started_at+(key==='kv'?0:60)));assert(step>=15);}
-          else {assert.deepEqual([...url.searchParams.keys()],['query']);assert(at>=task.started_at);}
+          if(key!=='kv')assert(confirmedTokens,'unknown counter units must not be queried');
+          assert(start>=Math.ceil(task.started_at+(key==='kv'?0:60)));assert(step>=15);
           if(failKV&&key==='kv'){status=503;body={error:'temporary cache query failure'};}
           else{
             const values=key==='kv'?[64,50]:key==='hitRate'?[68]:[1280];
@@ -74,12 +84,16 @@ const tokens=process.env.CHECK_CACHE_TOKENS==='1';
     await expect(page.locator('[data-replay-metric]')).toHaveCount(5);
     await expect(section).toContainText('cache-task');await expect(section).toContainText('等待实际打流开始时间');
     assert.equal(queries.length,0);
-    task={...task,status:'running',started_at:now-180,pausable:true,revision:2};
+    await expect.poll(()=>page.evaluate(()=>['kv','hitRate','hitTokens'].every(chart=>window.cacheAxisLabels.some(item=>item.chart===chart&&item.text==='00:00')))).toBe(true);
+    await page.evaluate(()=>{window.cacheAxisLabels=[];});
+    task={...task,status:'running',started_at:now-180+.75,pausable:true,revision:2};
     await page.clock.runFor(2500);
     await expect(kv.locator('.metric-value')).toContainText('64');
     await expect(kv).toContainText('实例最大值');await expect(kv).toContainText('engine=0');
     await expect(section.locator('[data-cache-chart="kv"] .cache-legend>span')).toHaveCount(2);
     await expect(section).toContainText('deployment=replay-deploy');
+    await expect(section.getByRole('checkbox',{name:'相对时间',exact:true})).toBeChecked();
+    await expect.poll(()=>page.evaluate(()=>window.cacheAxisLabels.some(item=>item.chart==='kv'&&item.text==='00:00'))).toBe(true);
     if(tokens){await expect(hitRate.locator('.metric-value')).toContainText('68');await expect(hitTokens.locator('.metric-value')).toContainText('1,280');}
     else {await expect(hitRate).toContainText('请先确认缓存计数单位');await expect(hitTokens.locator('.metric-value')).toContainText('—');}
     const beforeLeft=queries.length;
@@ -128,6 +142,19 @@ const tokens=process.env.CHECK_CACHE_TOKENS==='1';
     await page.getByRole('button',{name:'Switch to English',exact:true}).click();
     await expect(section).toContainText('Replay cache monitoring');
     if(!tokens)await expect(hitTokens).toContainText('Confirm the cache counter unit first');
+    {
+      confirmedTokens=true;
+      await section.getByLabel('Cache counter unit',{exact:true}).selectOption('tokens');
+      await expect(hitRate.locator('.metric-value')).toContainText('68');
+      await expect(hitTokens.locator('.metric-value')).toContainText('1,280');
+      await section.getByLabel('Cache counter unit',{exact:true}).selectOption('blocks');
+      await expect(hitRate.locator('.metric-value')).toContainText('68');
+      await expect(hitTokens).toContainText('Counter unit is not tokens; token/s is unavailable');
+      confirmedTokens=false;
+      await section.getByLabel('Cache counter unit',{exact:true}).selectOption('unknown');
+      await expect(hitRate).toContainText('Confirm the cache counter unit first');
+      await expect(hitRate.locator('.metric-value')).toContainText('—');
+    }
     for(const width of [736,360,320]){
       await page.setViewportSize({width,height:950});
       assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),`no overflow at ${width}px`);
@@ -140,6 +167,15 @@ const tokens=process.env.CHECK_CACHE_TOKENS==='1';
     await expect(kv.locator('.metric-observed')).toHaveCount(0);assert.equal(queries.length,beforeNew);
     await expect(page.locator('.replay-cache-section')).toHaveCount(1);
     await expect(page.locator('[data-replay-metric]')).toHaveCount(5);
+    // Receiving a fractional started_at in its first second must not skip a whole 30s refresh.
+    const freshStart=Math.ceil(await page.evaluate(()=>Date.now()/1000));
+    await page.clock.pauseAt(new Date((freshStart+.8)*1000));
+    task={...task,status:'running',started_at:freshStart+.75,pausable:true,revision:2};
+    missingKV=false;confirmedTokens=tokens;
+    await auth();await expect(section).toContainText('回放中');
+    await page.clock.runFor(1100);
+    await expect(kv.locator('.metric-value')).toContainText('64');
+    assert(queries.length>beforeNew,'first cache request should run at the next whole second');
     assert.deepEqual(errors,[]);
     console.log(`PASS: cache ${tokens?'token counters':'unconfirmed units'}, instance maximum/curves, target isolation, failures, empty results, pause/resume/cancel, reload, final historical time, relative tooltip, English and 320px layout.`);
   }finally{await browser.close();}

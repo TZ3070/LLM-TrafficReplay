@@ -1,16 +1,23 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { applyReplayResponse, restoreReplay } from '../src/replay';
+import { applyReplayResponse, replaySpeed, restoreReplay } from '../src/replay';
 import { readPending, readSnapshot, savePending, saveSnapshot } from '../src/replayStorage';
 import { ApiError, request } from '../src/data';
 
 const task={replay_id:'recovered',model_id:'alias',source_model:'source',start_time:100,end_time:200,status:'running',speed:5,started_at:300,cancellable:true,revision:2,progress:{ready:true,total:10,sent:8,completed:4},target:{metrics_labels:{model_name:'alias'}}};
+
+test('replay speed accepts positive numbers and the exact burst value',()=>{
+  assert.equal(replaySpeed(.5),.5);assert.equal(replaySpeed(10),10);assert.equal(replaySpeed('burst'),'burst');
+  assert.equal(replaySpeed(0),undefined);assert.equal(replaySpeed(Infinity),undefined);
+  assert.equal(replaySpeed('10'),undefined);assert.equal(replaySpeed('BURST'),undefined);
+});
 
 test('restoration uses the task context and corrects legacy metric aliases without inventing speed',()=>{
   const restored=restoreReplay(task,{alias:'real-model'});
   assert.equal(restored.modelId,'alias');assert.equal(restored.sourceModelId,'source');
   assert.equal(restored.metricsName,'real-model');assert.equal(restored.metricsLabels?.model_name,'real-model');
   assert.equal(restored.speed,5);assert.deepEqual(restored.source,{start:100,end:200});
+  assert.equal(restoreReplay({...task,speed:'burst'}).speed,'burst');
   assert.equal(restoreReplay({...task,speed:undefined}).speed,undefined);
   assert.equal(restoreReplay({...task,target:{metrics_labels:{model_name:'explicit-model'}}},{alias:'mapped-model'}).metricsName,'explicit-model');
   assert.throws(()=>restoreReplay({replay_id:'bad',status:'running'}),/模型或历史区间/);
@@ -37,6 +44,10 @@ test('refresh storage keeps non-secret context and the original pending idempote
     saveSnapshot('test',{replay:{...replay,apiKey:'must-not-persist'} as any});
     assert.equal(readSnapshot('test').replay?.speed,5);assert.equal(readSnapshot('other').replay,undefined);
     assert(!JSON.stringify(readSnapshot('test')).includes('must-not-persist'));
+    saveSnapshot('burst',{replay:{...replay,speed:'burst'}});
+    assert.equal(readSnapshot('burst').replay?.speed,'burst');
+    saveSnapshot('invalid-speed',{replay:{...replay,speed:'fast'} as any});
+    assert.equal(readSnapshot('invalid-speed').replay,undefined);
     const paused=restoreReplay({...task,status:'paused',pausable:false,resumable:true,paused_at:310,paused_seconds:12}, {}, replay);
     saveSnapshot('test',{replay:paused});
     assert.equal(readSnapshot('test').replay?.status,'paused');
@@ -47,6 +58,9 @@ test('refresh storage keeps non-secret context and the original pending idempote
     savePending('test',{key:'original-key',body,signature:JSON.stringify(body),context:{...replay,id:''}});
     assert.equal(readPending('test')?.key,'original-key');
     assert.equal(readPending('test')?.body.speed,5);assert.equal(readPending('other'),undefined);
+    const burstBody={model_id:'alias',start_time:100,end_time:200,speed:'burst' as const};
+    savePending('burst',{key:'burst-key',body:burstBody,signature:JSON.stringify(burstBody),context:{...replay,id:''}});
+    assert.equal(readPending('burst')?.body.speed,'burst');
     savePending('test');assert.equal(readPending('test'),undefined);
   }finally{globalThis.localStorage=priorLocal;globalThis.sessionStorage=priorSession;}
 });

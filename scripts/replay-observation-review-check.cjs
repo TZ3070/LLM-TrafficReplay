@@ -59,7 +59,7 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     await hoverLoad();
     await expect(load).toContainText('正在处理 · review-model 20');
     holdA=true;await page.clock.runFor(31000);
-    await expect.poll(()=>oldCount).toBeGreaterThanOrEqual(9); // 2 load + 5 latency + 2 KV queries
+    await expect.poll(()=>oldCount).toBeGreaterThanOrEqual(9); // 2 load + 5 latency + at least 2 KV queries; token mode adds prefix queries.
     task={...task,revision:2,target:{metrics_labels:{model_name:'review-model',deployment:'b'}}};
     await page.clock.runFor(2500);
     await expect(page.locator('.replay-cache-section')).toContainText('deployment=b');
