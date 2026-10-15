@@ -46,7 +46,8 @@ const assert=require('node:assert/strict');
     await page.getByRole('button',{name:'后端',exact:true}).click();
     await page.locator('[data-metric="ttft"] .metric-value.nan').waitFor();
     assert(!historyReady,'instant cards must not wait for a slow history query');
-    assert.equal(await page.locator('.metrics-grid .metric-card').count(),5);
+    assert.equal(await page.locator('.latency-section:not(.replay-latency-section) .metric-card').count(),5);
+    assert.equal(await page.locator('.replay-latency-section .metric-card').count(),5);
     assert.equal(await page.locator('#model option').count(),3,'observed model labels must be deduplicated');
     assert((await page.locator('[data-metric="tpot"]').innerText()).includes('暂无样本'));
     await page.locator('[data-metric="qt"] summary').click();
@@ -70,7 +71,7 @@ const assert=require('node:assert/strict');
     const longer=queries.filter(query=>query.includes('[1d]'));
     assert.equal(longer.length,5);
     assert(longer.every(query=>query.includes('model_name="model-b"')));
-    assert((await page.locator('.metrics-context').innerText()).includes('1d'));
+    assert((await page.locator('.latency-section:not(.replay-latency-section) .metrics-context').innerText()).includes('1d'));
     await page.locator('#model').selectOption('pd-model');
     await page.locator('[data-metric="ttft"] .metric-row strong.nan').waitFor();
     for(const key of ['ttft','e2e','itl','tpot','qt']){

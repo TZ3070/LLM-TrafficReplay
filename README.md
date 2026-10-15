@@ -23,6 +23,12 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 即时卡片：Prometheus → 看板后端 /api/prometheus/query
                    → data.ts / parseLatencyVector → App.metrics → TTFT/E2E/ITL/TPOT/QT 五张卡
 
+回放延迟：回放任务的实际时间、目标模型与部署标签 → 同一 /api/prometheus/query
+        → ReplayLatency → 独立五张回放实时延迟卡片（短窗口，每 30s 更新）
+
+回放缓存：同一任务的时间、目标标签 → query + query_range
+        → replayCacheData / ReplayCache / CacheTrend → 三张卡片与三张趋势图
+
 创建回放：左侧刷选 / 时间输入 → App.selection
         → POST /api/replays { model_id, start_time, end_time, speed }
         → 后端检索原请求档案并向同模型发送 → 返回 replay_id → App.replay
@@ -41,6 +47,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 | src/App.tsx | 查询条件、历史选区、回放提交、状态轮询与两个窗口的数据分配 |
 | src/types.ts | 模型 ID、指标标签、数据类型及时间单位约定 |
 | src/LoadChart.tsx | 绘制、异常值断点、tooltip、刷选边界回传，不发 HTTP 请求 |
+| src/replayCacheData.ts、src/ReplayCache.tsx、src/CacheTrend.tsx | 回放缓存配置/查询、实例解析、独立轮询、指标卡与缓存趋势图 |
 | src/chartTime.ts、src/time.ts | Unix 秒与图表坐标、相对时间、上海时间输入/显示之间的转换 |
 | vite.config.mjs | 本地同源请求到看板后端的代理 |
 
@@ -132,17 +139,77 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 `BACKEND_URL` 用于 Vite 本地代理，不会将后端地址写入生产页面。生产部署需将 `npm run build` 生成的 dist/ 放到静态服务，并配置 `/api` 反向代理；不能只把 dist/ 放到 GitHub Pages 后期望其自动连接后端。
 
-生产部署推荐使用仓库内置的 Docker 方案（`Dockerfile` + `docker-compose.yml`，nginx 托管 dist/ 并内置与 Vite 代理语义一致的反向代理与回放分流），操作步骤、离线变体、PyCharm SFTP / scp / 裸 nginx 等其他方式及验证清单见 **[DEPLOY.md](DEPLOY.md)**。
-
 模型列表和即时卡片使用 `/api/prometheus/query`，负载曲线使用 `/api/prometheus/query_range`。Prometheus 前缀可通过 `VITE_PROMETHEUS_API_PREFIX` 配置；均使用以 `/api/` 开头的同源路径。旧的 `VITE_MODEL_INFO_PATH` 仅保留兼容配置，首页已不调用 LiteLLM 模型列表接口。指标按 30 秒刷新，隐藏页面暂停；历史截止时间固定后不自动刷新。同一 Prometheus URL 在前端缓存并去重 30 秒，429 按 Retry-After 退避，未提供时等待 60 秒；指标与回放分别退避。不同指标查询使用 allSettled 隔离失败，保留 NaN 和 Inf。
 
 首页五张延迟卡片 TTFT、E2E、ITL、TPOT、QT 都使用即时 `GET /api/prometheus/query`，每张卡独立发送一条 PromQL。TTFT/E2E/ITL/QT 使用 rate(_sum)/rate(_count)；TPOT 使用解码耗时率除以生成 token 率减请求率，减法置于分母括号内。各表达式未加外层 avg。响应中的同模型 engine 分片在前端求算术平均，空闲分片的 NaN 会被跳过；如果所有分片都是 NaN，仍保留真实 NaN。普通模型按 role 分行；DeepSeek 默认把 proxy、prefill、decode 的全部分片混合平均并只展示一行，模型片段可通过 VITE_MIXED_LATENCY_ROLE_MODELS 配置。单条已聚合的结果直接取值，Inf 保留。表达式内核为 `rate(<metric>_sum{model_name="当前模型"}[<历史范围>]) / rate(<metric>_count{model_name="当前模型"}[<历史范围>])`；例如选择 12 小时，窗口就是 `[12h]`。后端接收完整 query，在看板后端的 TTL 缓存中按 URL 缓存，再请求 `${PROMETHEUS_TARGET}/api/v1/query`。因此这些卡片没有值时，应先看 Network 中的 query、HTTP 响应和 `data.result`，再区分路由错误、指标名错误、模型标签不匹配和窗口内没有样本。
 
-卡片的评估时刻是现在，修改历史截止时间不会把即时 query 的评估时刻移到过去；它只调整左侧 query_range。拖拽回放子区间也不改变延迟卡的回溯长度。模型或历史范围切换时清空旧卡片并重新查询，旧模型尚未完成的响应不会覆盖新模型数据。历史曲线与即时卡片并发加载，卡片独立显示加载、空样本、NaN 和可展开的查询错误。首页只查询这五项延迟指标，整个历史查询刷新共发 2 条区间曲线和 5 条即时指标请求；首次模型发现另发 1 条，页面每 30 秒刷新指标。模型列表通过“刷新列表”按钮更新，同样受 30 秒缓存限制，不持续轮询。
+原有卡片的评估时刻是现在，修改历史截止时间不会把即时 query 的评估时刻移到过去；它只调整左侧 query_range。拖拽回放子区间也不改变原有延迟卡的回溯长度。模型或历史范围切换时清空旧卡片并重新查询，旧模型尚未完成的响应不会覆盖新模型数据。历史曲线与即时卡片并发加载，卡片独立显示加载、空样本、NaN 和可展开的查询错误。历史查询刷新共发 2 条区间曲线和 5 条即时指标请求；回放开始并有足够采集时间后，新增区域另发 5 条独立延迟请求。首次模型发现另发 1 条，页面每 30 秒刷新指标。模型列表通过“刷新列表”按钮更新，同样受 30 秒缓存限制，不持续轮询。
 
 默认指标名已按旧看板提供的表达式配置：TTFT `vllm:time_to_first_token_seconds`、E2E `vllm:e2e_request_latency_seconds`、ITL `vllm:inter_token_latency_seconds`、QT `vllm:request_queue_time_seconds`。TPOT 为 `rate(vllm:request_decode_time_seconds_sum[窗口]) / (rate(vllm:request_generation_tokens_sum[窗口]) - rate(vllm:request_generation_tokens_count[窗口]))`，五项均附加当前模型筛选。分母为 0 时保留 Prometheus 返回的 NaN/Inf，不替换为 0。
 
 例如部署的 ITL 名称为其他指标时，在 .env.local 中配置 `VITE_PROMETHEUS_METRIC_NAMES='{"itl":{"sum":"custom:itl_sum","count":"custom:itl_count"}}'`，修改后重新构建。示例中的 custom 名称仅说明格式，不能直接用于真实部署。TPOT 覆盖配置必须包含 decodeSum、generationTokensSum、generationTokensCount 三个完整指标名，例如 `{"tpot":{"decodeSum":"vllm:request_decode_time_seconds_sum","generationTokensSum":"vllm:request_generation_tokens_sum","generationTokensCount":"vllm:request_generation_tokens_count"}}`。
+
+### 独立的回放实时延迟（2026-10-15）
+
+底部新增一组 TTFT、E2E、ITL、TPOT、QT；原有“延迟数据”的查询模型、历史回溯窗口和刷新规则保持原样。新区域使用右侧任务的 `metricsName` / `target.metrics_labels`，显示任务 ID、完整来源历史区间和每项成功查询的观测时间；切换左侧模型或固定历史截止时间不会改变回放延迟的目标和轮询。
+
+“实时”表示目标部署的近期平均延迟，每 30 秒刷新，不表示最近一条请求的延迟。默认 `VITE_PROMETHEUS_SCRAPE_INTERVAL_SECONDS=15`、`VITE_REPLAY_LATENCY_WINDOW_SECONDS=60`；应将前者改为真实采集间隔，窗口自动取配置值与采集间隔 4 倍中的较大值。开始后先等待至少两次采集间隔，初期使用不越过 `started_at` 的较短窗口，再逐步增长到配置窗口。无样本、NaN、Inf 保留原意，不替换成 0；低流量时短窗口可能没有有效延迟数据。修改配置后重新构建。
+
+查询仍走已有 `/api/prometheus/query?query=...`，例如 `rate(vllm:time_to_first_token_seconds_sum{model_name="目标模型"}[1m] @ 观测Unix秒) / rate(vllm:time_to_first_token_seconds_count{model_name="目标模型"}[1m] @ 观测Unix秒)`。指标后端只需原样透传完整 query，缓存键包含完整 query；无需新增接口或额外透传 `time` 参数。Prometheus 必须支持并启用范围选择器的 `@` 修饰符，且保留对应时刻的指标。各项指标应存在与右侧曲线相同的真实部署标签；不存在的指标或标签会返回空值或错误。
+
+未创建/未打流时显示等待，不查询回放延迟；暂停、等待在途请求完成和取消过程中仍持续观测。任务终态后将最终观测时间固定为 `finished_at + 2 × 采集间隔`，等待额外 30 秒缓存余量并取得一轮无查询错误的结果后停止轮询，成功空结果也属于一次成功查询，不能据此证明样本完整。结束后的数值是该固定窗口的近期平均，不是整个任务的平均。失败项保留本任务最近成功值及时间，并明确标记查询失败；新任务或目标部署变化会清空旧值。顶部“刷新指标”也刷新新增区域。
+
+刷新页面先沿用现有任务恢复机制，再重新查询回放延迟；终态任务按同一固定时刻查询，不会误用刷新当天的延迟。演示模式只显示明确标注的模拟值。
+
+最终观测时间向上取整到 Unix 整秒，确保不足一秒的任务也能经过完整的采样等待。新增验证：`npm test` 共 43 项通过，生产构建通过；`scripts/replay-latency-check.cjs` 使用模拟 HTTP 验证未打流等待、短窗口、目标部署筛选、原有卡片隔离、单项错误保留时间、暂停/继续、慢指标期间取消、终态固定时刻恢复、切换新任务清空、手动刷新、中英文与 320px 布局。原有 `scripts/latency-check.cjs`、`scripts/replay-pause-check.cjs` 回归通过，尚未使用真实后端指标验证。
+
+此功能无需修改 Benchmark。当前 Benchmark 主要返回 `model_name`，不能自动隔离同模型的多个部署或业务流量；新增卡片与右侧曲线均可能包含其他流量。若需要更精确的部署定位，Benchmark 应在现有 `target.metrics_labels` 返回真实部署标签，且这些标签必须同时存在于负载和五项延迟指标上。若要求严格只统计本次回放，需专用部署或后端提供任务级指标；只添加一个指标中不存在的 `replay_id` 标签无法实现隔离。真实五项指标、采集间隔、代理缓存与 PromQL 支持仍需部署联调确认。
+
+### 回放缓存观测（2026-10-15）
+
+“回放实时延迟”下方新增“回放缓存观测”：三张卡片（KV Cache 使用率、前缀缓存命中率、命中 token/s），一张全宽 KV 趋势图和两张并排的命中趋势图，手机端纵向排列。原有负载和两组延迟观测保持各自规则。区域显示目标模型、部署筛选标签、任务 ID/状态、完整来源历史和成功观测时间。趋势使用实际回放时间，勾选“相对时间”从实际 `started_at` 起算，tooltip 保留上海时间。
+
+统计口径：
+
+- KV 保留返回序列的全部真实身份标签（例如 instance、pod、engine、role），每条序列单独绘制，纵轴固定 0–100%。卡片取当前有效实例的最大使用率并标明实例，不相加，也不将未加权平均说成部署总使用率。没有实例标签的单条序列仍可显示，具体身份需采集端提供。
+- 前缀缓存命中率为 `100 * sum(rate(hits[窗口])) / sum(rate(queries[窗口]))`，按部署汇总计数率，不平均实例命中率。分母为 0 时显示空值；分母大于 0 且命中为 0 才显示真实 0%。hits 与 queries 必须来自同一计数体系、相同单位和相同工作节点范围。
+- 命中 token/s 为 `sum(rate(hits[窗口]))`，**只有确认 hits 计数单位是 token 后才启用**。不同 vLLM 版本可能按缓存块或请求计数，不能将 blocks/s 或 requests/s 标为 token/s，也不按固定 block size 擅自换算。配置 blocks/requests 时可看对应单位的命中率，token/s 保持不可用。
+
+在 `.env.local` 配置（修改后重新执行 `npm run dev`）：
+
+```dotenv
+# 默认指标名，KV 按 0~1 缩放；缓存计数单位未知，命中两项等待确认。
+VITE_REPLAY_CACHE_CONFIG='{}'
+# 检查实际 /metrics 的 HELP、vLLM 版本/实现，确认两个计数均为 token 后使用：
+# VITE_REPLAY_CACHE_CONFIG='{"counterUnit":"tokens"}'
+```
+
+完整可选配置示例（以下单位和标签须按真实部署核对，不能视为已确认）：
+
+```dotenv
+VITE_REPLAY_CACHE_CONFIG='{"kvMetric":"vllm:kv_cache_usage_perc","kvUnit":"ratio","hitsMetric":"vllm:prefix_cache_hits_total","queriesMetric":"vllm:prefix_cache_queries_total","counterUnit":"tokens","windowSeconds":60,"labels":{"role":"decode"}}'
+```
+
+`kvUnit` 支持 `ratio`（0–1，显示时乘 100）或 `percent`（0–100）；名称带 `_perc` 不能证明是 0–100。较旧版本可能用 `vllm:gpu_cache_usage_perc`，须显式改 `kvMetric`，前端不自动混用新旧指标。`counterUnit` 为 `unknown`（默认，不查询命中两项）、`tokens`、`blocks`、`requests`。窗口取配置与真实采集间隔 4 倍的较大值，采集间隔共用 `VITE_PROMETHEUS_SCRAPE_INTERVAL_SECONDS`。`labels` 仅供缓存指标附加精确筛选，例如排除重复计数的 proxy；不能覆盖任务目标的 model_name 或部署标签，否则显示冲突错误。配置格式见 `.env.example`。
+
+KV 从实际打流开始观测，PromQL 用 `timestamp` 排除回放前 gauge 和超过两次采集间隔的陈旧样本。命中两项等待一个完整窗口，趋势第一点为 `ceil(started_at + 窗口)`，每个点都不会读取回放前计数。短任务的结束补采范围不足完整窗口时，命中指标保持空值并明确提示，不混入回放前流量。KV 不受此窗口等待限制。
+
+每轮最多新增 3 条即时 query 和 3 条 query_range；默认单位未确认时仅查询 KV 的两条。即时 query 将 `@ 观测Unix秒` 写入表达式；区间请求透传 query/start/end/step，步长不小于采集间隔，约最多 301 点/序列。长任务会降采样，窄峰可能漏采；Prometheus 保留期、超时或最大区间限制仍可能影响恢复范围。空缺点绘为断点，空响应/NaN/Inf 显示空值；超范围百分比显示单位/计数器错误，不强行裁成 100%。
+
+页面刷新先恢复原任务，再查询原 `started_at` 起的完整趋势，不重新创建任务。左侧模型/时间选择不改变缓存观测目标。暂停、draining、cancelling 仍观测；终态固定在 `ceil(finished_at + 2 × 采集间隔)`，留 30 秒缓存余量并取得一轮无查询错误响应后停止，成功空结果也会停止，不能据此认定样本完整。结束后的命中卡片是固定窗口的近期值，不是任务累计值。缺少 finished_at 时继续轮询。单项卡片/趋势失败独立保留本任务最近成功数据及时间；新任务/目标变化清空旧数据，顶部“刷新指标”可重新查询。
+
+**后端与部署要求（本次不修改 Benchmark）：**
+
+1. 已有指标后端继续提供 `GET /api/prometheus/query`、`GET /api/prometheus/query_range`，透传完整 PromQL、start/end/step，缓存键包含完整参数。返回标准 Prometheus vector/matrix JSON；支持 `@`、`timestamp`、`rate` 和向量匹配。无需新增缓存专用接口，指标查询不携带 Benchmark 凭据。
+2. Prometheus 采集实际 vLLM 的 KV gauge 和同单位 hits/queries counter，保留所需历史。确认命中率分母定义、计数单位、采集间隔、指标版本、前缀缓存是否启用；缺少指标需在 vLLM/exporter 侧补充，单改 Benchmark 无法生成 KV 数据。`rate` 处理计数器重置；空响应不等于“不支持缓存”。
+3. Benchmark 当前主要返回 `target.metrics_labels.model_name`。同模型多部署时，需在现有公共任务响应（`app/benchmark/api.py` 组装目标标签的位置）补充真实 deployment/namespace/job 等标签，并在创建/状态/活动响应保持一致；这些标签须存在于全部相关指标。本项目只记录要求，未修改 Benchmark 文件。
+4. 在采集端或 Prometheus 去除 HA 副本、重复 scrape target、proxy/worker 重复计数，或用缓存 labels 筛选唯一采集路径；前端不猜测去重。命中两项对筛选后的序列求和。严格只统计本次回放需专用部署或任务级指标，当前数据可能包含其他业务流量，不添加不存在的 replay_id 标签。
+
+验证使用模拟 HTTP，未向真实部署发流；生产使用前仍须核对实际指标/单位/标签。`node scripts/replay-cache-check.cjs` 默认验证单位未配置时的空态；使用 `VITE_REPLAY_CACHE_CONFIG='{"counterUnit":"tokens"}'` 构建后，以 `CHECK_CACHE_TOKENS=1` 运行同脚本可验证全部三项、刷新恢复、暂停/取消和终态固定历史查询。
+
+本次 `npm test` 50 项通过，默认配置和 token 单位配置的构建/浏览器检查均通过；原有延迟及暂停按钮浏览器回归通过。另验证了自定义指标前缀、30 秒去重、blocks/requests 单位禁用 token/s、单项错误隔离、空结果清除、相对时间 tooltip、中英文及 320px 布局。新区域与回放延迟使用各自的 React key，避免切换模式/任务时重复挂载；图表不随约 2 秒一次的进度轮询重绘。
+
+再次审查修复：顶部“刷新指标”同时重新查询右侧回放负载曲线，已停止轮询的终态任务也可刷新，仍使用原任务时间；同一任务的模型或部署标签更新时，负载、回放延迟与缓存观测清空旧数据，未完成的旧查询不会覆盖新目标。缓存趋势中的孤立样本显示采样点，避免短任务或停采间隙导致有数据却看不到曲线；缓存卡片首次查询失败时显示“查询失败 · 查看详情”。新增 `node scripts/replay-observation-review-check.cjs`，用模拟 HTTP 验证部署更新、旧响应隔离、首次失败空态、单点曲线、终态手动刷新和页面刷新后的原任务时间恢复。手动刷新仍遵守已有 30 秒指标缓存，实际更新还受后端缓存与采集间隔影响。
 
 ### 模型列表可加载，但指标提示 404
 

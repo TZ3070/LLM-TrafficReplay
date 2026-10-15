@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Check, Clock3, Database, Languages, Layers3, LoaderCircle, Pause, Play, Radio, RefreshCw, Settings2, Terminal, Timer, X, Zap } from 'lucide-react';
+import { Activity, Check, Languages, Layers3, LoaderCircle, Pause, Play, Radio, RefreshCw, Settings2, Terminal, X } from 'lucide-react';
 import LoadChart from './LoadChart';
 import ReplayProgress from './ReplayProgress';
+import LatencyCard, { LATENCY_CARDS } from './LatencyCard';
+import ReplayLatency from './ReplayLatency';
+import ReplayCache from './ReplayCache';
+import { createReplayCacheConfig } from './replayCacheData';
+import { createReplayLatencyConfig } from './replayLatencyData';
 import { isTerminalReplay } from './replay';
 import { readMode, readSnapshot, rememberMode, saveSnapshot } from './replayStorage';
 import { useReplay } from './useReplay';
@@ -20,6 +25,8 @@ import { localizeMessage, readLanguage, rememberLanguage, translate, type Langua
  */
 const EMPTY: LoadData = { running:[],waiting:[],errors:[] };
 const API = createApiConfig(import.meta.env);
+const REPLAY_LATENCY = createReplayLatencyConfig(import.meta.env);
+const REPLAY_CACHE = createReplayCacheConfig(import.meta.env, REPLAY_LATENCY.scrapeSeconds);
 // 路径由构建时环境配置覆盖；回放接口为待与真实后端联调的契约。
 const CREATE = import.meta.env.VITE_REPLAY_CREATE_PATH || '/api/replays';
 const STATUS = import.meta.env.VITE_REPLAY_STATUS_PATH || '/api/replays/{id}';
@@ -81,6 +88,7 @@ export default function App() {
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
   const selectionRef=useRef(selection); selectionRef.current=selection;
   const active=!!replay&&!isTerminalReplay(replay.status);
+  const replayLabelsKey=JSON.stringify(Object.entries(replay?.metricsLabels || {}).sort(([a],[b])=>a.localeCompare(b)));
   const validSelection=!!selection&&selection.start>=range.start&&selection.end<=range.end&&selection.end>selection.start;
   const canCreate=ready && !restoring && !pending && !active && !submitting;
   useEffect(()=>rememberMode(mode),[mode]);
@@ -165,7 +173,7 @@ export default function App() {
   // 选区固定历史窗口，不将 range 放入依赖引起重复请求。
   },[mode,modelMode,modelId,seconds,historyEnd,refreshToken]);
   // 曲线使用实际时间与目标标签，独立保持 30s 刷新及结束后的采集余量。
-  useEffect(()=>{setReplayRange(undefined);setReplayData(EMPTY);},[replay?.id]);
+  useEffect(()=>{setReplayRange(undefined);setReplayData(EMPTY);},[replay?.id,replay?.startedAt,replay?.metricsName,replayLabelsKey,mode]);
   useEffect(()=>{
     if(!replay||replay.startedAt===undefined)return;
     const id=replay.id;let live=true,busy=false,metricsSettled=false;
@@ -191,7 +199,7 @@ export default function App() {
     void load();const timer=setInterval(()=>void load(),mode==='demo'?3000:30000);
     document.addEventListener('visibilitychange',visible);
     return()=>{live=false;clearInterval(timer);document.removeEventListener('visibilitychange',visible);};
-  },[replay?.id,replay?.startedAt,replay?.finishedAt,mode]);
+  },[replay?.id,replay?.startedAt,replay?.finishedAt,replay?.metricsName,replayLabelsKey,mode,refreshToken]);
   // 新模型需要重新选历史区间，但已创建的 replay 和 replayData 不清空。
   const chooseModel=(id:string)=>{setModelId(id);setSelection(undefined);setHistory(EMPTY);setMetrics(emptyMetrics);};
   const chooseTime=(duration:number)=>{setSeconds(duration);setSelection(undefined);setMetrics(emptyMetrics);};
@@ -211,18 +219,6 @@ export default function App() {
   };
   // 两个窗口使用同一纵轴上限，避免缩放差异被误当作负载改善。
   const sharedMax=maxLoad(history,replayData);
-  const cards=[
-    {key:'ttft' as const,label:t('首 TOKEN 延迟'),unit:'s',icon:Timer,note:'TTFT · time to first token'},
-    {key:'e2e' as const,label:t('端到端延迟'),unit:'s',icon:Clock3,note:'E2E · end-to-end latency'},
-    {key:'itl' as const,label:t('Token 间延迟'),unit:'s',icon:Activity,note:'ITL · inter-token latency'},
-    {key:'tpot' as const,label:t('每输出 Token 延迟'),unit:'s',icon:Zap,note:'TPOT · time per output token'},
-    {key:'qt' as const,label:t('请求排队时间'),unit:'s',icon:Database,note:'QT · queue time'}
-  ];
-  const metricCard=({key,label,unit,icon:Icon,note}: (typeof cards)[number])=>{
-    const m=metrics[key],value=m.value;
-    const hasSample=value!==undefined||m.rows?.some(row=>row.value!==undefined);
-    return <section className="metric-card" key={key} data-metric={key}><div className="metric-label">{label}<Icon size={16}/></div>{m.rows?.length?<div className="metric-rows">{m.rows.map(row=><div className="metric-row" key={row.name}><span title={row.name}>{row.name}</span><strong className={Number.isNaN(row.value)?'nan':''}>{formatValue(row.value,3,language)} <small>{unit}</small></strong></div>)}</div>:<div className={`metric-value ${Number.isNaN(value)?'nan':''}`}>{formatValue(value,3,language)}<span>{unit}</span></div>}<div className="metric-sub" title={m.error?message(m.error):note}>{m.error?t('查询失败 · 查看详情'):metricsLoading&&!hasSample?t('查询中…'):!hasSample?t('暂无样本 · 检查指标名与模型标签'):note}</div>{m.error&&<details className="metric-error"><summary>{t('错误详情')}</summary><p>{message(m.error)}</p></details>}</section>;
-  };
   return <div className="app-shell">
     <div className="main-shell">
       <header className="topbar"><div className="breadcrumb">Workspace</div><div className="header-right"><span className={`connection ${mode==='demo'?'demo':''}`}><i/>{t(mode==='demo'?'演示数据':'后端模式')}</span><button className="language-switch" type="button" aria-label={language==='zh'?'Switch to English':'切换到中文'} title={language==='zh'?'Switch to English':'切换到中文'} onClick={()=>setLanguage(previous=>previous==='zh'?'en':'zh')}><Languages size={15}/><span lang="zh-CN" className={language==='zh'?'current':''}>中文</span><span className="language-divider">/</span><span lang="en" className={language==='en'?'current':''}>EN</span></button><button className="icon-button" aria-label={t('连接设置')} onClick={()=>setSettingsOpen(true)}><Settings2 size={18}/></button></div></header>
@@ -285,8 +281,10 @@ export default function App() {
         <section className="latency-section" aria-label={t('延迟数据')}>
           <div className="section-title"><div><h2>{t('延迟数据')}</h2><span>LATENCY</span></div><span className="section-hint">{t('即时查询 · 回溯 {window}',{window:promDuration(seconds)})}</span></div>
           <div className="metrics-context">{t('{model} · 延迟回溯 {window} · 即时查询',{model:model?.name||t('尚未选择模型'),window:promDuration(seconds)})}</div>
-          <div className="metrics-grid">{cards.map(metricCard)}</div>
+          <div className="metrics-grid">{LATENCY_CARDS.map(card=><LatencyCard key={card.key} metricKey={card.key} metric={metrics[card.key]} loading={metricsLoading} language={language}/>)}</div>
         </section>
+        <ReplayLatency key={`latency:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
+        <ReplayCache key={`cache:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_CACHE} language={language} refreshToken={refreshToken} taskStatus={replay ? t(statusNames[replay.status]) : undefined}/>
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>

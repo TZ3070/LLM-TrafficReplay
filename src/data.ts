@@ -145,16 +145,20 @@ const defaultMetricNames: Record<LatencyMetricKey, MetricNameConfig> = {
  * 五张首页卡片各发一条即时 query。后端按 TTL 缓存后透传 Prometheus 的原样响应。
  * rate 窗口就是历史查询范围（例如 30m、24h、7d），不是固定 1m。
  */
-export function metricQueries(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG) {
-  const f = selector(modelName);
+export interface MetricQueryOptions { labels?: Labels; evaluatedAt?: number }
+export function metricQueries(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG, options: MetricQueryOptions = {}) {
+  const f = selector(modelName, options.labels);
   const window = promDuration(windowSeconds);
+  if (options.evaluatedAt !== undefined && (!Number.isFinite(options.evaluatedAt) || options.evaluatedAt < 0)) throw new Error('无效的延迟观测时间');
+  // 将观测时间写入 PromQL，兼容只透传 query 的已有指标后端；原有卡片不带 @。
+  const at = options.evaluatedAt === undefined ? '' : ` @ ${Math.floor(options.evaluatedAt)}`;
   return (Object.keys(defaultMetricNames) as LatencyMetricKey[]).reduce((queries, key) => {
     const metric = config.metricNames[key] || defaultMetricNames[key];
     // 保持旧看板的 ratio 表达式：分片与 role 标签留给 parseLatencyVector 解析。
     if ('decodeSum' in metric) {
-      queries[key] = `rate(${metric.decodeSum}${f}[${window}]) / (rate(${metric.generationTokensSum}${f}[${window}]) - rate(${metric.generationTokensCount}${f}[${window}]))`;
+      queries[key] = `rate(${metric.decodeSum}${f}[${window}]${at}) / (rate(${metric.generationTokensSum}${f}[${window}]${at}) - rate(${metric.generationTokensCount}${f}[${window}]${at}))`;
     } else {
-      queries[key] = `rate(${metric.sum}${f}[${window}]) / rate(${metric.count}${f}[${window}])`;
+      queries[key] = `rate(${metric.sum}${f}[${window}]${at}) / rate(${metric.count}${f}[${window}]${at})`;
     }
     return queries;
   }, {} as Record<LatencyMetricKey, string>);
@@ -223,7 +227,7 @@ export function request(path: string, options: RequestInit = {}, auth?: ClientOp
   return performRequest(path,options,auth);
 }
 // 由指标入口显式使用缓存，改路由前缀后仍保持 30s 去重，不依赖某一种拼写。
-function requestPrometheus(path: string): Promise<any> {
+export function requestPrometheus(path: string): Promise<any> {
   const existing=promCache.get(path);
   if(existing && existing.expires>Date.now())return existing.promise;
   for(const [key,value] of promCache)if(value.expires<=Date.now())promCache.delete(key);
@@ -289,10 +293,10 @@ export function retainFailedLoad(previous: LoadData, next: LoadData): LoadData {
   };
 }
 /** 即时 query → 页面底部卡片；这些值不是历史选区的汇总结果。 */
-export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG): Promise<Metrics> {
-  const queries = metricQueries(modelName, windowSeconds, config);
+export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG, options: MetricQueryOptions = {}): Promise<Metrics> {
+  const queries = metricQueries(modelName, windowSeconds, config, options);
   const keys = Object.keys(queries) as MetricKey[];
-  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config)), modelName, config.mixedLatencyRoleModels)));
+  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config)), options.labels?.model_name || modelName, config.mixedLatencyRoleModels)));
   const data = {} as Metrics;
   results.forEach((r, i) => { data[keys[i]] = r.status === 'fulfilled' ? r.value : { error: r.reason.message }; if(r.status === 'rejected') console.warn(r.reason); });
   return data;

@@ -24,7 +24,5 @@ replay-preview.png
 # 部署配置本身不进入构建上下文。
 Dockerfile
 docker-compose.yml
-deploy.env.example
 .dockerignore
-DEPLOY.md
 README.md
