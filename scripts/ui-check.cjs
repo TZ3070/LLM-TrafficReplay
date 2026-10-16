@@ -6,7 +6,8 @@ const assert = require('assert');
   const page=await browser.newPage({viewport:{width:1440,height:1120}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('http://127.0.0.1:4173');
-  await page.getByText('首 TOKEN 延迟',{exact:true}).waitFor();
+  // “延迟数据”与“回放实时延迟”两区渲染相同卡片标题，需限定区域避免严格模式多元素命中。
+  await page.getByRole('region',{name:'延迟数据'}).getByText('首 TOKEN 延迟',{exact:true}).waitFor();
   await page.waitForTimeout(1000);
   const chart=page.locator('.load-chart').first();
   const box=await chart.boundingBox();
@@ -19,7 +20,8 @@ const assert = require('assert');
   await page.screenshot({path:path.resolve('preview.png'),fullPage:true});
   await page.getByRole('button',{name:'确认回放',exact:true}).click();
   await page.getByRole('button',{name:'开始回放',exact:true}).click();
-  await page.getByText('回放中',{exact:true}).waitFor();
+  // badge 与缓存观测区都会显示状态文字，限定到回放面板的 badge。
+  await page.locator('.replay-panel .badge').getByText('回放中',{exact:true}).waitFor();
   await page.waitForTimeout(1000);
   await page.locator('#model').selectOption('Llama-3.3-70B');
   await page.waitForTimeout(300);
