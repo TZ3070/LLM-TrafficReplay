@@ -17,7 +17,7 @@
 | `/api/replays/{id}/cancel` | POST | 请求取消任务 | Benchmark 提供 |
 | `/api/replays/{id}/pause`、`/resume` | POST | 暂停/继续任务 | 前端按钮已移除，不再调用；契约保留供手动调用 |
 | `/api/replays/{id}` | GET | 查询状态、计数、实际开始/结束时间、目标指标标签 | Benchmark 提供 |
-| `/api/prometheus/query_range` | GET | 查询历史及回放后的处理/等待曲线 | 使用已有接口 |
+| `/api/prometheus/query_range` | GET | 查询历史及回放后的处理/等待曲线、首 Token 延迟趋势 | 使用已有接口 |
 | `/api/prometheus/query` | GET | 模型发现、原有五项延迟及新增五项回放实时延迟 | 使用已有接口 |
 
 前端已支持倍速、活动任务恢复、进度、取消及刷新后的曲线重建；暂停/继续按钮已于 2026-10-16 移除，前端不再调用 pause/resume，但仍识别 `paused` 状态（显示“已暂停”、继续观测、可取消），第 13 节契约保留供后端实现与手动调用，没有完整任务列表。手动认证刷新后重新输入密钥即可恢复，服务端代理认证模式可自动恢复。
@@ -370,7 +370,24 @@ step  = max(5, ceil((end - start) / 60))
 
 这些数值是目标部署短窗口平均，沿用原有五项指标定义和 role/engine 聚合规则，不是最近一条请求或全任务平均。Benchmark 无需新增接口，但应确保返回标签真实存在于负载和延迟指标中；只有 `model_name` 时可能合并同名部署。右侧曲线和新增延迟若来自共享部署，都可能包含其他业务流量；严格的本任务统计需专用部署或后端任务级指标。详见 README 的“独立的回放实时延迟”。
 
-## 8. 错误响应
+## 8. 回放历史趋势
+
+回放实时延迟卡片下方展示一张全宽首 Token 延迟历史趋势图（TTFT，单位 ms），每轮只新增一条 `GET /api/prometheus/query_range`。使用回放任务的实际 `started_at`、`metricsName` 和 `target.metrics_labels`，不新增 Benchmark 接口。默认每 30 秒刷新，页面刷新后从已保存任务的固定时间重新查询。吞吐率曲线暂不展示或查询。
+
+TTFT 查询使用现有 TTFT histogram 的 sum/count 指标，表达式为：
+
+```promql
+1000 * (
+  rate(vllm:time_to_first_token_seconds_sum{model_name="目标模型"}[1m]) /
+  rate(vllm:time_to_first_token_seconds_count{model_name="目标模型"}[1m])
+)
+```
+
+曲线解析沿用即时卡片规则：普通模型按 role 分组并平均 engine，配置为混合 role 的模型合并为一条曲线。展示窗口平均延迟。NaN engine 不参与平均，全部缺失或非有限值显示为空点；按查询的 start/end/step 补齐中间漏点为空值，使停采区间断线。响应格式、重复时间戳、查询网格外的点和负延迟会触发查询错误，不覆盖原有成功曲线。每条序列约最多 301 点，步长不小于采集间隔；长任务降采样可能漏掉窄峰。
+
+趋势查询严格等待完整 rate 窗口，窗口左端为 `ceil(started_at + 窗口)`，因此不会把回放前的样本带入。默认窗口为 60 秒，并自动保持为采集间隔的至少 4 倍；采集中显示等待状态，终态补采范围仍不足完整窗口时显示“任务观测时段不足完整统计窗口”并停止等待。等待期间相对横轴仍从实际 `started_at` 的 0 秒起算，演示模式也只从完整窗口后的网格生成样本。终态继续使用 `ceil(finished_at + 2 × 采集间隔)` 的固定评估时刻，再保留 30 秒缓存余量、取得一轮成功响应后停止轮询。TTFT 查询直接复用即时延迟卡片的表达式和自定义指标配置，结果乘以 1000 显示毫秒；模型筛选与响应校验优先使用 `target.metrics_labels.model_name`。首次失败明确提示无成功数据，后续失败保留同一任务的上次成功曲线及时间，成功空结果清空旧数据。切换任务或部署后旧响应无法回写新目标。趋势属于目标部署，可能包含其他业务流量；任务级隔离需要专用部署或后端任务级指标。
+
+## 9. 错误响应
 
 沿用已有后端格式；`details` 最多 200 字符：
 
@@ -397,7 +414,7 @@ step  = max(5, ceil((end - start) / 60))
 
 业务任务失败仍允许状态接口返回 `200` 和 `status: "failed"`。HTTP 错误表示此次接口访问失败，与任务的执行状态是两件事。前端支持秒数或 HTTP 日期形式的 `Retry-After`，且回放与指标的限流退避相互独立。
 
-## 9. 后端实现步骤
+## 10. 后端实现步骤
 
 1. 校验四个请求字段、调用权限、可回放范围和幂等键。
 2. 解析逻辑模型到历史档案筛选条件、当前优化部署路由及目标指标标签，固定到任务记录。
@@ -409,7 +426,7 @@ step  = max(5, ceil((end - start) / 60))
 
 Benchmark 当前全服务只允许一个活动任务，没有用户隔离；其他后端实现也必须提供原子的活动任务约束。
 
-## 10. 前端配置与联调
+## 11. 前端配置与联调
 
 `.env.local`：
 
@@ -441,7 +458,7 @@ VITE_MODEL_METRICS_MAP='{}'
 目前仓库的浏览器联调脚本使用模拟 HTTP 响应；真实后端、档案检索和原速打流仍需按上述步骤验证。
 
 
-## 11. 任务恢复、取消与刷新契约
+## 12. 任务恢复、取消与刷新契约
 
 公共任务响应必须包含 replay_id、status、model_id 或 target_model、source_model、start_time、end_time；补充 speed、cancellable、revision、cancel_requested_at 和 target.metrics_labels。创建、状态、active.task、409.active_task、取消以及 409.task 使用同一任务结构。speed 是创建时固定的正数或 `"burst"`，必须原样返回；revision 随持久化更新递增。
 
@@ -457,7 +474,7 @@ VITE_MODEL_METRICS_MAP='{}'
 
 取消接口返回 202 和 cancelling 任务，重复取消仍 202；已终态返回 409 + task；不存在返回 404。cancellable=false 不启用取消按钮。取消不撤回已提交请求，必须继续查询直到终态；计数按实际进展显示，不把取消进度填为 100%。取消提交和调度提交由后端共用锁保护，取消受理后不再提交新请求。前端拒绝旧 revision 和取消前迟到的轮询响应，终态不能被非终态覆盖。
 
-## 12. 刷新认证方式
+## 13. 刷新认证方式
 
 manual（默认）：页面输入 `Bearer 实际BENCHMARK_API_KEY`，认证只在页面内存，刷新后重新输入并应用设置即恢复任务。
 
@@ -467,7 +484,7 @@ proxy：设置 `VITE_REPLAY_AUTH_MODE=proxy` 和服务端 `BENCHMARK_API_KEY=原
 
 浏览器刷新只是恢复观测；后端进程重启仍将活动任务标记 failed，不支持断点续跑。自动恢复不触发真实流量重放，完整结果也不缓存到浏览器。
 
-## 13. 暂停与继续契约
+## 14. 暂停与继续契约
 
 前端已于 2026-10-16 移除“暂停回放 / 继续回放”按钮，不再发起 pause/resume 请求；以下契约保留，供后端实现与直接调用 API 的场景参考。前端仍识别 `paused` 状态：显示“已暂停”、进度与指标观测继续、任务可取消，恢复打流需通过后端 API。所需后端改动及补丁应用顺序见 [README](../README.md#暂停继续契约与取消流程2026-10-14)。本次只修改 llm-dashboard，不自动修改或部署 Benchmark。
 
@@ -479,7 +496,7 @@ proxy：设置 `VITE_REPLAY_AUTH_MODE=proxy` 和服务端 `BENCHMARK_API_KEY=原
 
 paused 属于活动和可取消状态，阻止新建任务；刷新通过 active 恢复原任务，保持暂停，不自动继续。进度与 Prometheus 曲线轮询继续，查询起点仍为原 started_at。取消必须通知 Condition，唤醒暂停线程并转为 cancelling；已提交请求结束后才 cancelled。后端进程重启将 paused 标记 failed，不承诺进程级恢复。
 
-## 14. 回放缓存指标观测
+## 15. 回放缓存指标观测
 
 新增区域复用任务 `started_at`、`finished_at`、实际指标模型名和 `target.metrics_labels`，独立查询已有 Prometheus query_range，不新增 Benchmark 接口或发送额外推理请求。默认指标为 `vllm:kv_cache_usage_perc`、`vllm:prefix_cache_hits_total`、`vllm:prefix_cache_queries_total`，名称/单位/窗口通过 `VITE_REPLAY_CACHE_CONFIG` 配置；完整口径和部署条件见 [README](../README.md#回放缓存观测2026-10-15)。
 

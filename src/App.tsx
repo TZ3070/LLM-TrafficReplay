@@ -4,6 +4,7 @@ import LoadChart from './LoadChart';
 import ReplayProgress from './ReplayProgress';
 import LatencyCard, { LATENCY_CARDS } from './LatencyCard';
 import ReplayLatency from './ReplayLatency';
+import ReplayTrend from './ReplayTrend';
 import ReplayCache from './ReplayCache';
 import { createReplayCacheConfig } from './replayCacheData';
 import { createReplayLatencyConfig } from './replayLatencyData';
@@ -280,6 +281,7 @@ export default function App() {
           <div className="metrics-grid">{LATENCY_CARDS.map(card=><LatencyCard key={card.key} metricKey={card.key} metric={metrics[card.key]} loading={metricsLoading} language={language}/>)}</div>
         </section>
         <ReplayLatency key={`latency:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
+        <ReplayTrend key={`trend:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
         <ReplayCache key={`cache:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_CACHE} language={language} refreshToken={refreshToken} taskStatus={replay ? t(statusNames[replay.status]) : undefined}/>
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>

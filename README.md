@@ -25,6 +25,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 
 回放延迟：回放任务的实际时间、目标模型与部署标签 → 同一 /api/prometheus/query
         → ReplayLatency → 独立五张回放实时延迟卡片（短窗口，每 30s 更新）
+        → ReplayTrend → 首 Token 延迟历史趋势（完整 rate 窗口，每 30s 更新）
 
 回放缓存：同一任务的时间、目标标签 → query + query_range
         → replayCacheData / ReplayCache / CacheTrend → 三张卡片与三张趋势图
@@ -48,6 +49,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 | src/types.ts | 模型 ID、指标标签、数据类型及时间单位约定 |
 | src/LoadChart.tsx | 绘制、异常值断点、tooltip、刷选边界回传，不发 HTTP 请求 |
 | src/replayCacheData.ts、src/ReplayCache.tsx、src/CacheTrend.tsx | 回放缓存配置/查询、实例解析、独立轮询、指标卡与缓存趋势图 |
+| src/replayTrendData.ts、src/ReplayTrend.tsx | 回放首 Token 延迟趋势查询、轮询、解析与图表 |
 | src/chartTime.ts、src/time.ts | Unix 秒与图表坐标、相对时间、上海时间输入/显示之间的转换 |
 | vite.config.mjs | 本地同源请求到看板后端的代理 |
 
@@ -161,7 +163,15 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 刷新页面先沿用现有任务恢复机制，再重新查询回放延迟；终态任务按同一固定时刻查询，不会误用刷新当天的延迟。演示模式只显示明确标注的模拟值。
 
-最终观测时间向上取整到 Unix 整秒，确保不足一秒的任务也能经过完整的采样等待。新增验证：`npm test` 共 43 项通过，生产构建通过；`scripts/replay-latency-check.cjs` 使用模拟 HTTP 验证未打流等待、短窗口、目标部署筛选、原有卡片隔离、单项错误保留时间、暂停/继续、慢指标期间取消、终态固定时刻恢复、切换新任务清空、手动刷新、中英文与 320px 布局。原有 `scripts/latency-check.cjs`、`scripts/replay-pause-check.cjs` 回归通过，尚未使用真实后端指标验证。
+### 回放历史趋势（2026-10-16）
+
+“回放历史趋势”位于回放实时延迟卡片下方，当前只展示一张全宽“首 Token 延迟”曲线（TTFT，ms），吞吐率暂不展示或查询。曲线默认使用相对时间，零点为任务实际 `started_at`；取消相对时间后显示上海时间，tooltip 同时保留完整时间和单位。区域每 30 秒刷新，任务切换或部署标签变化时清空旧曲线并忽略旧目标的迟到响应，刷新页面后按已保存任务的原始时间重新查询。
+
+每轮只新增一条 `/api/prometheus/query_range`，不新增 Benchmark 接口。TTFT 复用现有延迟卡片的 histogram 配置和表达式，结果乘以 1000 显示毫秒；展示窗口平均值，普通模型按 role 分组并平均 engine，DeepSeek 等配置的模型混合 role。单个空闲 engine 的 NaN 不参与平均，全部缺失、NaN 或无穷值显示为空点；接口省略的中间采样点也会补为空点，避免折线跨过停采区间。无效响应、重复时间戳、查询网格外的点和负延迟均显示查询错误。
+
+趋势只在完整 rate 窗口可用后开始查询，窗口左端为 `ceil(started_at + 窗口)`，不会把回放开始前的流量带入。窗口默认 60 秒，并自动保持为采集间隔的至少 4 倍；采集中显示“等待完整统计窗口”，已结束且补采时段仍不足窗口的任务显示“任务观测时段不足完整统计窗口”并停止等待。等待期间相对横轴也从实际打流的 0 秒开始。终态沿用回放延迟的固定结束时间和 30 秒缓存余量，单项查询失败保留该项最近成功曲线，成功空结果清空旧曲线。指标属于目标部署，可能包含其他业务流量；严格的任务级隔离仍需要专用部署或后端任务级指标。
+
+最终观测时间向上取整到 Unix 整秒。首次查询失败显示“查询失败 · 查看详情”，已有成功结果后的失败保留曲线和观测时间；演示模式也遵守完整窗口，不补造打流起点的数据。趋势测试覆盖窗口、终态恢复、目标标签与自定义指标、毫秒单位、engine/role 聚合、真实零值、空值断点、异常采样点和单次查询步长。`node scripts/replay-trend-check.cjs` 使用模拟 HTTP 检查首 Token 单图、等待与空态、tooltip、错误保留、终态固定、刷新恢复、部署切换及迟到响应、中英文和 320px 布局；可用 `CHECK_BASE_URL` 指定预览地址。尚未使用真实后端指标验证。
 
 此功能无需修改 Benchmark。当前 Benchmark 主要返回 `model_name`，不能自动隔离同模型的多个部署或业务流量；新增卡片与右侧曲线均可能包含其他流量。若需要更精确的部署定位，Benchmark 应在现有 `target.metrics_labels` 返回真实部署标签，且这些标签必须同时存在于负载和五项延迟指标上。若要求严格只统计本次回放，需专用部署或后端提供任务级指标；只添加一个指标中不存在的 `replay_id` 标签无法实现隔离。真实五项指标、采集间隔、代理缓存与 PromQL 支持仍需部署联调确认。
 
