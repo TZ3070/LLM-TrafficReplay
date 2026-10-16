@@ -3,6 +3,16 @@ export type Language = 'zh' | 'en';
 const LANGUAGE_KEY = 'trafficReplay.language';
 
 const english: Record<string, string> = {
+  '清空数据': 'Clear data',
+  '清空中…': 'Clearing…',
+  '正在清空数据': 'Clearing data',
+  '正在创建任务，无法清空数据': 'Cannot clear data while creating a task',
+  '请先完成任务恢复，再清空数据': 'Complete task recovery before clearing data',
+  '创建结果尚未确认，无法清空数据': 'Cannot clear data while a creation outcome is unconfirmed',
+  '任务尚未结束，无法清空数据': 'Cannot clear data until the task ends',
+  '暂无可清空的回放数据': 'No replay data to clear',
+  '清空当前任务的观测数据': 'Clear observation data for the current task',
+  '已清空回放数据': 'Replay data cleared',
   'Token 吞吐率趋势': 'Token throughput trends',
   '输入 Token': 'Input tokens',
   '输出 Token': 'Output tokens',
@@ -254,6 +264,10 @@ export function translate(language: Language, text: string, values: Record<strin
 
 // 数据层/后端错误保留原文存储，显示时翻译已知前端消息；不改写模型名或未知上游详情。
 const errorTranslations: Record<string, string> = {
+  '清空数据失败：': 'Failed to clear data: ',
+  '无法清除本地任务记录，请检查浏览器存储权限后重试。': 'Unable to clear the local task record. Check browser storage permissions and retry.',
+  '检测到活动任务，已恢复观测，请等待任务结束后再清空。': 'An active task was found and observation resumed. Wait until it ends before clearing data.',
+  '创建结果尚未确认，无法清空数据': english['创建结果尚未确认，无法清空数据'],
   '吞吐率响应包含重复序列': 'Throughput response contains duplicate series',
   '吞吐率响应模型或格式无效': 'Invalid throughput response model or format',
   '吞吐率采样点无效': 'Invalid throughput sample',

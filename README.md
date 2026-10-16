@@ -151,6 +151,14 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 例如部署的 ITL 名称为其他指标时，在 .env.local 中配置 `VITE_PROMETHEUS_METRIC_NAMES='{"itl":{"sum":"custom:itl_sum","count":"custom:itl_count"}}'`，修改后重新构建。示例中的 custom 名称仅说明格式，不能直接用于真实部署。TPOT 覆盖配置必须包含 decodeSum、generationTokensSum、generationTokensCount 三个完整指标名，例如 `{"tpot":{"decodeSum":"vllm:request_decode_time_seconds_sum","generationTokensSum":"vllm:request_generation_tokens_sum","generationTokensCount":"vllm:request_generation_tokens_count"}}`。
 
+### 手动清空回放数据（2026-10-16）
+
+右侧“回放观测”标题栏新增“清空数据”。仅已完成、失败、已取消的任务可以清空；等待开始、准备请求、回放中、已暂停、等待处理完成、正在取消，以及创建中、恢复中、恢复失败和创建结果待确认时均禁用，悬停按钮可查看原因。
+
+后端模式清空前会重新查询活动任务接口：发现活动任务时恢复该任务观测并拒绝清空，查询失败或响应无效时保留当前数据。清空成功后移除当前环境的本地任务快照，右侧任务信息、进度、负载曲线与关联的回放延迟/趋势/吞吐/缓存数据回到空态，停止任务轮询并忽略迟到响应；刷新且没有新的活动任务时保持空态。保留左侧历史查询、选区、语言与连接设置，不删除后端任务或 Prometheus 数据，也不丢弃未确认创建请求的幂等记录。浏览器存储清理失败时显示错误并保留页面数据。演示模式仅清空演示任务，不修改后端快照或待确认记录。
+
+验证：`npm test`、`npm run build`；预览服务启动后运行 `node scripts/replay-clear-check.cjs`（可设置 `CHECK_BASE_URL`）。该脚本拦截全部 API，覆盖三种终态、六种非终态、活动任务复核及失败、存储失败、幂等记录、迟到响应、停止轮询、刷新空态、重新创建、演示隔离、中英文与 320px 布局，不发送真实回放流量。
+
 ### 独立的回放实时延迟（2026-10-15）
 
 底部新增一组 TTFT、E2E、ITL、TPOT、QT；原有“延迟数据”的查询模型、历史回溯窗口和刷新规则保持原样。新区域使用右侧任务的 `metricsName` / `target.metrics_labels`，显示任务 ID、完整来源历史区间和每项成功查询的观测时间；切换左侧模型或固定历史截止时间不会改变回放延迟的目标和轮询。

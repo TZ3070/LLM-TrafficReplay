@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, request, type ClientOptions } from './data';
 import { applyReplayResponse, isTerminalReplay, restoreReplay } from './replay';
-import { readPending, readSnapshot, savePending, saveSnapshot, type PendingReplay, type ReplayBody } from './replayStorage';
+import { clearReplaySnapshot, readPending, readSnapshot, savePending, saveSnapshot, type PendingReplay, type ReplayBody } from './replayStorage';
 import { createUuid } from './uuid';
 import type { Replay } from './types';
 
@@ -22,6 +22,8 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
   const [actionError,setActionError]=useState('');
   const [submitting,setSubmitting]=useState(false);
   const [cancelling,setCancelling]=useState(false);
+  const [clearing,setClearing]=useState(false);
+  const [clearNotice,setClearNotice]=useState('');
   const [restoredId,setRestoredId]=useState<string>();
   const [recoveryToken,setRecoveryToken]=useState(0);
   const [pollToken,setPollToken]=useState(0);
@@ -30,6 +32,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
   const authSignature=`${auth.authHeader}:${auth.apiKey || ''}:${authReady}`;
   const setTask=useCallback((task:Replay | undefined)=>{
     replayRef.current=task;setReplay(task);
+    if(task)setClearNotice('');
     if(mode==='backend')saveSnapshot(scope,{...readSnapshot(scope),replay:task});
   },[mode,scope]);
   const setOperation=useCallback((op:PendingReplay | undefined)=>{
@@ -46,7 +49,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
 
   useEffect(()=>{
     const token=++epoch.current;let live=true;
-    setActionError('');setRecoveryError('');setRestoredId(undefined);
+    setActionError('');setRecoveryError('');setRestoredId(undefined);setClearNotice('');
     if(mode==='demo'){setTask(undefined);setReady(true);setRestoring(false);return()=>{live=false;};}
     setReady(false);
     const cached=readSnapshot(scope).replay;
@@ -170,5 +173,40 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
       }else setActionError(`取消回放失败：${(e as Error).message}`);
     }finally{cancelBusy.current=false;setCancelling(false);setPollToken(value=>value+1);}
   };
-  return {replay,replayRef,ready,restoring,recoveryError,actionError,pending,submitting,cancelling,restoredId,begin,cancel,retryPending,recover:()=>setRecoveryToken(value=>value+1),clearActionError:()=>setActionError('')};
+  const clearDisabledReason=clearing?'正在清空数据'
+    : submitting?'正在创建任务，无法清空数据'
+    : restoring || !ready || recoveryError?'请先完成任务恢复，再清空数据'
+    : pending?'创建结果尚未确认，无法清空数据'
+    : cancelling || replay && !isTerminalReplay(replay.status)?'任务尚未结束，无法清空数据'
+    : !replay?'暂无可清空的回放数据':'';
+  const clear=async()=>{
+    const task=replayRef.current;
+    if(clearDisabledReason || !task || !isTerminalReplay(task.status) || actionBusy.current || cancelBusy.current || (mode==='backend'&&pendingRef.current))return false;
+    actionBusy.current=true;setClearing(true);setActionError('');setClearNotice('');
+    const token=epoch.current;
+    const current=()=>epoch.current===token && replayRef.current?.id===task.id;
+    try{
+      if(mode==='backend'){
+        const active=await request(lightweight(paths.active),{cache:'no-store'},authRef.current);
+        if(!current())return false;
+        if(active?.active===true){
+          // 其他页面可能已创建任务；完整校验，不能拿旧任务上下文补齐新任务。
+          const activeTask=restoreReplay(active.task,metricsMap);
+          if(isTerminalReplay(activeTask.status))throw new Error('活动任务响应格式无效');
+          setTask(activeTask);setRestoredId(activeTask.id);
+          throw new Error('检测到活动任务，已恢复观测，请等待任务结束后再清空。');
+        }
+        if(active?.active!==false || active.task!=null)throw new Error('活动任务响应格式无效');
+        if(pendingRef.current || readPending(scope))throw new Error('创建结果尚未确认，无法清空数据');
+        clearReplaySnapshot(scope);
+      }
+      // 同步更新引用并使旧状态响应失效；指标组件随任务移除清理轮询和旧响应。
+      ++epoch.current;setTask(undefined);setRestoredId(undefined);setClearNotice('已清空回放数据');
+      return true;
+    }catch(e){
+      if(epoch.current===token)setActionError(`清空数据失败：${(e as Error).message}`);
+      return false;
+    }finally{actionBusy.current=false;setClearing(false);}
+  };
+  return {replay,replayRef,ready,restoring,recoveryError,actionError,pending,submitting,cancelling,clearing,clearNotice,clearDisabledReason,restoredId,begin,cancel,clear,retryPending,recover:()=>setRecoveryToken(value=>value+1),clearActionError:()=>setActionError('')};
 }

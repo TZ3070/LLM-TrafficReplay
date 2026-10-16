@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Check, Languages, Layers3, LoaderCircle, Play, Radio, RefreshCw, Settings2, Terminal, X } from 'lucide-react';
+import { Activity, Check, Languages, Layers3, LoaderCircle, Play, Radio, RefreshCw, Settings2, Terminal, Trash2, X } from 'lucide-react';
 import LoadChart from './LoadChart';
 import ReplayProgress from './ReplayProgress';
 import LatencyCard, { LATENCY_CARDS } from './LatencyCard';
@@ -92,13 +92,13 @@ export default function App() {
   const [relative,setRelative]=useState(saved.history?.relative || false); // 只控制横轴展示，不改变查询边界或打流速度。
   const [speed,setSpeed]=useState<ReplaySpeed>(1);
   const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:API.modelMetricsMap});
-  const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,restoredId}=replayController;
+  const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,clearing,clearNotice,clearDisabledReason,restoredId}=replayController;
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
   const selectionRef=useRef(selection); selectionRef.current=selection;
   const active=!!replay&&!isTerminalReplay(replay.status);
   const replayLabelsKey=JSON.stringify(Object.entries(replay?.metricsLabels || {}).sort(([a],[b])=>a.localeCompare(b)));
   const validSelection=!!selection&&selection.start>=range.start&&selection.end<=range.end&&selection.end>selection.start;
-  const canCreate=ready && !restoring && !pending && !active && !submitting;
+  const canCreate=ready && !restoring && !pending && !active && !submitting && !clearing;
   useEffect(()=>rememberMode(mode),[mode]);
   useEffect(()=>{
     if(mode==='backend')saveSnapshot(STORAGE_SCOPE,{replay,history:{modelId,seconds,range,selection,historyEnd,relative}});
@@ -197,11 +197,11 @@ export default function App() {
         const window={start,end};
         // 与历史图共用 fetchLoad，但标签和时间来自回放任务；不是读取原历史区间。
         const data=mode==='demo'?demoLoad(current.modelId,window,true):await fetchLoad(current.metricsName,window,current.metricsLabels,API);
-        if(live){setReplayRange(window);setReplayData(previous=>retainFailedLoad(previous,data));}
+        if(live&&replayRef.current?.id===id){setReplayRange(window);setReplayData(previous=>retainFailedLoad(previous,data));}
         // 后端报告完成后再等待采集/缓存延迟，并在一次无查询错误的结果后停止轮询。
         // 这是前端刷新停止条件，不证明档案完整，也不是通过折线推断任务成功。
         if(current.finishedAt!==undefined && Date.now()/1000>current.finishedAt+60 && data.errors.length===0)metricsSettled=true;
-      }catch(e){if(live)setReplayData(data=>({...data,errors:[(e as Error).message]}));}finally{busy=false;}
+      }catch(e){if(live&&replayRef.current?.id===id)setReplayData(data=>({...data,errors:[(e as Error).message]}));}finally{busy=false;}
     };
     const visible=()=>{if(!document.hidden)void load();};
     void load();const timer=setInterval(()=>void load(),mode==='demo'?3000:30000);
@@ -237,12 +237,12 @@ export default function App() {
           <div className="field"><label htmlFor="range">{t('历史查询范围')}</label><select id="range" value={seconds} onChange={e=>chooseTime(Number(e.target.value))}>{![900,1800,3600,21600,43200,86400,604800].includes(seconds)&&<option value={seconds}>{t('任务历史区间')}</option>}<option value={900}>{t('最近 15 分钟')}</option><option value={1800}>{t('最近 30 分钟')}</option><option value={3600}>{t('最近 1 小时')}</option><option value={21600}>{t('最近 6 小时')}</option><option value={43200}>{t('最近 12 小时')}</option><option value={86400}>{t('最近 24 小时')}</option><option value={604800}>{t('最近 7 天')}</option></select></div>
           <div className="field history-end"><label htmlFor="history-end">{t('截止时间')} <button className="text-action" onClick={()=>{setHistoryEnd(undefined);setSelection(undefined);}}>{t('现在')}</button></label><input id="history-end" type="datetime-local" step="1" value={toInput(historyEnd??range.end)} onChange={e=>{const end=fromInput(e.target.value);if(Number.isFinite(end)){setHistoryEnd(end);setSelection(undefined);}}}/></div>
           <div className="filter-meta"><span className="model-tag">{model?.provider||'MODEL'}</span><span>{selection?t('历史窗口已固定'):t('约 60 个采样点 · {step}s 步长',{step:queryTiming(seconds).step})}</span></div>
-          <div className="mode-switch" aria-label={t('数据源')}><button className={mode==='demo'?'selected':''} onClick={()=>setMode('demo')} disabled={active||submitting||restoring}>{t('演示')}</button><button className={mode==='backend'?'selected':''} onClick={()=>setMode('backend')} disabled={active||submitting||restoring}>{t('后端')}</button></div>
+          <div className="mode-switch" aria-label={t('数据源')}><button className={mode==='demo'?'selected':''} onClick={()=>setMode('demo')} disabled={active||submitting||restoring||clearing}>{t('演示')}</button><button className={mode==='backend'?'selected':''} onClick={()=>setMode('backend')} disabled={active||submitting||restoring||clearing}>{t('后端')}</button></div>
         </section>
         {error&&<div className="error-banner" role="alert">{message(error)}<button aria-label={t('关闭错误')} onClick={()=>setError('')}><X size={15}/></button></div>}
-        {mode==='backend'&&(restoring||recoveryError)&&<div className="recovery-banner" role="status"><span>{restoring?t('正在恢复回放任务…'):message(recoveryError)}</span>{!restoring&&<button className="button secondary" onClick={()=>authSettings.apiKey||PROXY_AUTH?replayController.recover():setSettingsOpen(true)}>{t(authSettings.apiKey||PROXY_AUTH?'重试恢复':'填写认证')}</button>}</div>}
+        {mode==='backend'&&(restoring||recoveryError)&&<div className="recovery-banner" role="status"><span>{restoring?t('正在恢复回放任务…'):message(recoveryError)}</span>{!restoring&&<button className="button secondary" disabled={clearing} onClick={()=>authSettings.apiKey||PROXY_AUTH?replayController.recover():setSettingsOpen(true)}>{t(authSettings.apiKey||PROXY_AUTH?'重试恢复':'填写认证')}</button>}</div>}
         {actionError&&<div className="error-banner" role="alert">{message(actionError)}<button aria-label={t('关闭错误')} onClick={replayController.clearActionError}><X size={15}/></button></div>}
-        {pending&&<div className="recovery-banner" role="status"><span>{t('有创建请求尚未确认结果；重试会复用原参数和幂等键。')}</span><button className="button secondary" disabled={!ready||active||submitting} onClick={()=>void replayController.retryPending()}>{t('重试原创建请求')}</button></div>}
+        {pending&&<div className="recovery-banner" role="status"><span>{t('有创建请求尚未确认结果；重试会复用原参数和幂等键。')}</span><button className="button secondary" disabled={!ready||active||submitting||clearing} onClick={()=>void replayController.retryPending()}>{t('重试原创建请求')}</button></div>}
         {model?.replayError&&<div className="error-banner" role="alert">{message(model.replayError)}</div>}
         <div className="section-title"><div><h2>{t('流量实验')}</h2><span>TRAFFIC REPLAY</span></div><span className="section-hint">{t('历史流量 → 当前模型部署')}</span></div>
         <div className="charts-grid">
@@ -261,7 +261,9 @@ export default function App() {
             </div>
           </section>
           <section className={`chart-panel replay-panel ${!replay?'no-replay':''}`}>
-            <div className="panel-header"><div><span className="panel-index">02</span><h3>{t('回放观测')}</h3></div><span className={`badge ${replay?.status==='paused'?'neutral':active?'live':replay?.status==='failed'?'failed':'neutral'}`}>{active&&replay?.status!=='paused'&&<i/>}{t(replay?statusNames[replay.status]:'等待回放')}</span></div>
+            <div className="panel-header"><div><span className="panel-index">02</span><h3>{t('回放观测')}</h3></div><div className="panel-header-actions"><span className={`badge ${replay?.status==='paused'?'neutral':active?'live':replay?.status==='failed'?'failed':'neutral'}`}>{active&&replay?.status!=='paused'&&<i/>}{t(replay?statusNames[replay.status]:'等待回放')}</span><span title={t(clearDisabledReason||'清空当前任务的观测数据')}><button className="button secondary clear-replay" type="button" disabled={!!clearDisabledReason} aria-describedby="clear-replay-hint" onClick={()=>void replayController.clear().then(cleared=>{if(cleared)setConfirmOpen(false);})}>{clearing?<LoaderCircle size={13} className="spin"/>:<Trash2 size={13}/>}<span>{t(clearing?'清空中…':'清空数据')}</span></button></span></div></div>
+            <span id="clear-replay-hint" className="sr-only">{t(clearDisabledReason||'清空当前任务的观测数据')}</span>
+            {clearNotice&&<div className="replay-clear-notice" role="status"><Check size={14}/>{t(clearNotice)}</div>}
             <div className="panel-model"><strong>{replay?.modelName||t('等待创建回放任务')}</strong><span>{replay?.startedAt!==undefined?t('{time} 开始',{time:dateTime(replay.startedAt)}):t('回放开始后自动获取模型曲线')}</span></div>
             {replay&&<>
               <ReplayProgress replay={replay} language={language}/>
@@ -294,7 +296,7 @@ export default function App() {
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>
-    {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label={t('关闭')} disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">{t('确认回放历史流量')}</h2><p>{t(speed==='burst'?'将所选时间段的全部请求一次性发送给该模型当前部署。':'将所选时间段的请求按所选倍速发送给该模型当前部署。')}</p><dl><dt>{t('模型')}</dt><dd>{model?.name}</dd><dt>{t('开始时间')}</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>{t('结束时间')}</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>{t('回放倍速')}</dt><dd>{speed==='burst'?'∞':`${speed}×`}</dd><dt>{t('模式')}</dt><dd>{t(mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求')}</dd></dl>{(error||actionError)&&<div className="chart-error" role="alert">{message(actionError||error)}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>{t('取消')}</button><button className="button primary" disabled={submitting||!ready||active} onClick={()=>pending?void replayController.retryPending():void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}{t('开始回放')}</button></div></section></div>}
+    {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label={t('关闭')} disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">{t('确认回放历史流量')}</h2><p>{t(speed==='burst'?'将所选时间段的全部请求一次性发送给该模型当前部署。':'将所选时间段的请求按所选倍速发送给该模型当前部署。')}</p><dl><dt>{t('模型')}</dt><dd>{model?.name}</dd><dt>{t('开始时间')}</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>{t('结束时间')}</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>{t('回放倍速')}</dt><dd>{speed==='burst'?'∞':`${speed}×`}</dd><dt>{t('模式')}</dt><dd>{t(mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求')}</dd></dl>{(error||actionError)&&<div className="chart-error" role="alert">{message(actionError||error)}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>{t('取消')}</button><button className="button primary" disabled={submitting||!ready||active||clearing} onClick={()=>pending?void replayController.retryPending():void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}{t('开始回放')}</button></div></section></div>}
     {settingsOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close icon-button" aria-label={t('关闭')} onClick={()=>setSettingsOpen(false)}><X size={19}/></button><h2 id="settings-title">{t('后端连接设置')}</h2>
       <p>{t('模型指标使用 BACKEND_URL；回放可单独配置 REPLAY_BACKEND_URL。修改 .env.local 后重新运行 npm run dev。')}</p>
       {PROXY_AUTH?<p className="settings-note">{t('回放认证由同源服务端代理提供，刷新后自动恢复。')}</p>:<>
@@ -308,7 +310,7 @@ export default function App() {
         <label>{t('指标认证值')}<input type="password" autoComplete="off" value={metricsKey} onChange={event=>setMetricsKey(event.target.value)} placeholder={metricsHeader==='Authorization'?'Bearer <API_KEY>':'API_KEY'}/></label>
         <p>{t('仅用于 Prometheus 查询，留空则不携带认证。凭据仅在页面内存中保存；Authorization 请填写完整 Bearer 值。')}</p>
       </details>
-      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling} onClick={()=>{
+      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||clearing} onClick={()=>{
         const metricsAuth={apiKey:metricsKey.trim(),authHeader:metricsHeader};
         if(metricsAuth.apiKey!==appliedMetrics.current.apiKey || metricsAuth.authHeader!==appliedMetrics.current.authHeader){
           setMetricsAuth(metricsAuth);appliedMetrics.current=metricsAuth;setMetricsIdentity(value=>value+1);setRefreshToken(value=>value+1);

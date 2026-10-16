@@ -1,4 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap');
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.replay-panel .panel-header { flex-wrap:wrap; gap:10px; }
+.replay-panel .panel-header-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-left:auto; }
+.panel-header-actions .clear-replay { min-height:28px; padding:0 8px; font-size:10px; white-space:nowrap; }
+.replay-clear-notice { display:flex; align-items:center; gap:6px; margin:0 19px 12px; color:#23836f; font-size:11px; }
 .cache-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:14px 0; }
 .cache-card-note,.cache-instance { margin-top:8px; color:#8792a3; font-size:10px; line-height:1.7; overflow-wrap:anywhere; }
 .cache-instance { color:#5966bf; }

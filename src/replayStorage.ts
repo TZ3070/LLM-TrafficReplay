@@ -35,6 +35,15 @@ export function saveSnapshot(scope: string, value: ReplaySnapshot) {
   const replay=r && {id:r.id,modelId:r.modelId,sourceModelId:r.sourceModelId,modelName:r.modelName,metricsName:r.metricsName,source:r.source,status:r.status,speed:r.speed,cancellable:r.cancellable,pausable:r.pausable,resumable:r.resumable,pausedAt:r.pausedAt,pausedSeconds:r.pausedSeconds,cancelRequestedAt:r.cancelRequestedAt,revision:r.revision,startedAt:r.startedAt,finishedAt:r.finishedAt,metricsLabels:r.metricsLabels,requestCount:r.requestCount,sentCount:r.sentCount,completedCount:r.completedCount,failedCount:r.failedCount,skippedCount:r.skippedCount,statusUpdatedAt:r.statusUpdatedAt,taskError:r.taskError};
   try { write(localStorage,key(scope),{replay,history:value.history}); } catch { /* 无本地存储时使用后端恢复。 */ }
 }
+/** 清空必须确认落盘成功，不能沿用普通快照写入的静默失败。 */
+export function clearReplaySnapshot(scope: string) {
+  try {
+    const snapshot=JSON.parse(localStorage.getItem(key(scope)) || '{}');
+    localStorage.setItem(key(scope),JSON.stringify({history:snapshot?.history}));
+    const stored=JSON.parse(localStorage.getItem(key(scope)) || 'null');
+    if(!stored || stored.replay !== undefined)throw new Error();
+  } catch { throw new Error('无法清除本地任务记录，请检查浏览器存储权限后重试。'); }
+}
 export function readPending(scope: string): PendingReplay | undefined {
   try {
     const raw=read(sessionStorage,key(scope)+'.pending');

@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { applyReplayResponse, replaySpeed, restoreReplay } from '../src/replay';
-import { readPending, readSnapshot, savePending, saveSnapshot } from '../src/replayStorage';
+import { clearReplaySnapshot, readPending, readSnapshot, savePending, saveSnapshot } from '../src/replayStorage';
 import { ApiError, request } from '../src/data';
 
 const task={replay_id:'recovered',model_id:'alias',source_model:'source',start_time:100,end_time:200,status:'running',speed:5,started_at:300,cancellable:true,revision:2,progress:{ready:true,total:10,sent:8,completed:4},target:{metrics_labels:{model_name:'alias'}}};
@@ -63,6 +63,37 @@ test('refresh storage keeps non-secret context and the original pending idempote
     assert.equal(readPending('burst')?.body.speed,'burst');
     savePending('test');assert.equal(readPending('test'),undefined);
   }finally{globalThis.localStorage=priorLocal;globalThis.sessionStorage=priorSession;}
+});
+
+test('clearing replay storage preserves history, pending operations and other environments',()=>{
+  const data=new Map<string,string>();
+  const storage={getItem:(key:string)=>data.get(key)??null,setItem:(key:string,value:string)=>data.set(key,value),removeItem:(key:string)=>data.delete(key)} as Storage;
+  const priorLocal=globalThis.localStorage,priorSession=globalThis.sessionStorage;
+  globalThis.localStorage=storage;globalThis.sessionStorage=storage;
+  try{
+    const replay=restoreReplay({...task,status:'succeeded'});
+    const history={modelId:'source',seconds:1800,range:{start:0,end:1800},selection:{start:100,end:200},historyEnd:1800,relative:true};
+    const body={model_id:'alias',start_time:100,end_time:200,speed:5};
+    saveSnapshot('clear',{replay,history});saveSnapshot('other',{replay});
+    savePending('clear',{key:'keep-key',body,signature:JSON.stringify(body),context:replay});
+    clearReplaySnapshot('clear');
+    assert.equal(readSnapshot('clear').replay,undefined);
+    assert.deepEqual(readSnapshot('clear').history,history);
+    assert.equal(readSnapshot('other').replay?.id,replay.id);
+    assert.equal(readPending('clear')?.key,'keep-key');
+  }finally{globalThis.localStorage=priorLocal;globalThis.sessionStorage=priorSession;}
+});
+
+test('clearing reports blocked or ignored storage writes instead of claiming success',()=>{
+  const priorLocal=globalThis.localStorage;
+  const saved=JSON.stringify({replay:restoreReplay({...task,status:'succeeded'})});
+  try{
+    for(const setItem of [()=>{throw new Error('blocked');},()=>{}]){
+      globalThis.localStorage={getItem:()=>saved,setItem} as unknown as Storage;
+      assert.throws(()=>clearReplaySnapshot('clear'),/无法清除本地任务记录/);
+      assert.equal(readSnapshot('clear').replay?.id,'recovered');
+    }
+  }finally{globalThis.localStorage=priorLocal;}
 });
 
 test('structured conflict payloads survive errors and metrics throttling does not block cancellation',async()=>{
