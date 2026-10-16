@@ -483,6 +483,6 @@ paused 属于活动和可取消状态，阻止新建任务；刷新通过 active
 
 新增区域复用任务 `started_at`、`finished_at`、实际指标模型名和 `target.metrics_labels`，独立查询已有 Prometheus query_range，不新增 Benchmark 接口或发送额外推理请求。默认指标为 `vllm:kv_cache_usage_perc`、`vllm:prefix_cache_hits_total`、`vllm:prefix_cache_queries_total`，名称/单位/窗口通过 `VITE_REPLAY_CACHE_CONFIG` 配置；完整口径和部署条件见 [README](../README.md#回放缓存观测2026-10-15)。
 
-KV 每实例独立曲线，卡片显示最大使用率。命中率为部署 hits rate 之和除以 queries rate 之和；当前部署已确认 token 计数，默认启用命中两项，页面可为当前任务切换单位。显式 unknown 时先显示待确认；blocks/requests 仅展示命中率。缓存卡片使用 `start=end` 的单点 query_range，趋势使用完整区间，均不依赖 `@`。指标后端须透传完整 PromQL（支持 timestamp、time、rate 和向量匹配）、start/end/step 并正确区分缓存键。计数趋势等待完整回放后窗口，终态按固定历史时刻查询，刷新恢复原任务完整时间段。缓存曲线默认相对时间，从实际 started_at 的 0 起算，不补造起点数据。
+KV 每实例独立曲线，卡片显示最大使用率。命中率为部署 hits rate 之和除以 queries rate 之和；当前部署已确认 token 计数，默认启用命中两项，页面可为当前任务切换单位。显式 unknown 时先显示待确认；blocks/requests 仅展示命中率。KV 卡片从趋势区间查询结果推导（回放中取各实例最后有效点的最大值，终态取回放全程峰值）；命中率/token 卡片使用 `start=end` 的单点 query_range，趋势使用完整区间，均不依赖 `@`。指标后端须透传完整 PromQL（支持 timestamp、time、rate 和向量匹配）、start/end/step 并正确区分缓存键。计数趋势等待完整回放后窗口，终态按固定历史时刻查询，刷新恢复原任务完整时间段。缓存曲线默认相对时间，从实际 started_at 的 0 起算，不补造起点数据。
 
 Benchmark 当前仅提供 model_name 时，可能包含其他部署流量；精确定位应在公共任务响应增加真实部署标签，同样标签须存在于全部相关指标。HA/重复采集去重和 vLLM 指标/单位确认属于指标侧职责，本次仅修改 llm-dashboard。

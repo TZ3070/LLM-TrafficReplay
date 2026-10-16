@@ -1,8 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { cacheQueries, createReplayCacheConfig, emptyCacheData, fetchReplayCache, parseCacheResult, replayCachePlan, retainReplayCache } from '../src/replayCacheData';
+import { cacheQueries, createReplayCacheConfig, deriveKvCurrent, emptyCacheData, fetchReplayCache, parseCacheResult, replayCachePlan, retainReplayCache, type CacheResult } from '../src/replayCacheData';
 import { createApiConfig } from '../src/apiConfig';
-import type { Replay } from '../src/types';
+import type { Replay, Series } from '../src/types';
 
 const config = createReplayCacheConfig({}, 15);
 const task: Replay = { id:'task',modelId:'alias',modelName:'target',metricsName:'real-model',metricsLabels:{model_name:'real-model',deployment:'target-deploy'},source:{start:10,end:20},status:'running',startedAt:1000.75 };
@@ -26,10 +26,28 @@ test('KV starts immediately, full rate windows never include pre-task traffic an
   assert.deepEqual(replayCachePlan(task,1061,config)?.rateRange,{start:1061,end:1061});
   const ended = {...task,status:'cancelled' as const,finishedAt:1100.5};
   const final = replayCachePlan(ended,2000,config)!;
+  assert.equal(final.terminal,true); assert.equal(replayCachePlan(task,1200,config)!.terminal,false);
   assert.equal(final.evaluatedAt,1131); assert.equal(final.settleAfter,1161);
   assert.deepEqual(replayCachePlan(ended,9999,config),final);
   assert.equal(replayCachePlan({...task,status:'succeeded',finishedAt:1001},2000,config)?.rateRange,undefined);
   for(const status of ['paused','draining','cancelling'] as const) assert.equal(replayCachePlan({...task,status},1200,config)?.evaluatedAt,1200);
+});
+
+test('derived KV card tracks the curve: last defined point while running, earliest peak when terminal', () => {
+  const series = (name: string, values: (number | undefined)[]): Series => ({ id: name, name, points: values.map((value, index) => ({ timestamp: 1000 + index * 15, value })) });
+  const trend: CacheResult = { series: [series('a', [10, 30, undefined, undefined]), series('b', [20, 35, 28, undefined])] };
+  const running = deriveKvCurrent(trend, false);
+  assert.equal(running.value, 30); assert.equal(running.name, 'a'); assert.equal(running.observedAt, 1015);
+  assert.deepEqual(running.series.map(s => s.points.map(p => p.timestamp)), [[1015], [1030]]);
+  const peak = deriveKvCurrent(trend, true);
+  assert.equal(peak.value, 35); assert.equal(peak.name, 'b'); assert.equal(peak.observedAt, 1015);
+  // 并列峰值取首次达到时刻；跨序列并列取更早的点。
+  assert.equal(deriveKvCurrent({ series: [series('a', [42, 42, 42])] }, true).observedAt, 1000);
+  const tie = deriveKvCurrent({ series: [series('a', [30, undefined, 30]), series('b', [30, 30, undefined])] }, false);
+  assert.equal(tie.value, 30); assert.equal(tie.name, 'b'); assert.equal(tie.observedAt, 1015);
+  assert.deepEqual(deriveKvCurrent({ series: [series('a', [undefined, undefined])] }, false), { series: [] });
+  const failed = deriveKvCurrent({ series: [], error: 'HTTP 503' }, false);
+  assert.equal(failed.error, 'HTTP 503'); assert.equal(failed.value, undefined);
 });
 
 test('cache queries preserve instance labels, use weighted counter rates and guard stale/pre-start KV samples', () => {
@@ -88,17 +106,17 @@ test('cache requests respect counter units, custom routes, deduplication and ind
     const query=url.searchParams.get('query')!, range=url.pathname.endsWith('/query_range');
     if(!range||query.includes('@')) return new Response(JSON.stringify({error:'Invalid query syntax'}),{status:400});
     const current=url.searchParams.get('start')===url.searchParams.get('end');
-    if(url.pathname.includes('tokens')&&current&&query.includes('kv_cache')) return new Response(JSON.stringify({error:'temporary'}),{status:503});
+    if(url.pathname.includes('tokens')&&query.includes('kv_cache')) return new Response(JSON.stringify({error:'temporary'}),{status:503});
     assert(Number(url.searchParams.get('step'))>=15);
     assert(Number(url.searchParams.get('start')) >= task.startedAt! + (query.includes('prefix_cache')?60:0));
-    if(current)assert.equal(Number(url.searchParams.get('end')),1200,'cards evaluate at the exact observation time');
+    if(current)assert.equal(Number(url.searchParams.get('end')),1200,'rate cards evaluate at the exact observation time');
     const stamp=Number(url.searchParams.get('start'));
     const metric=query.includes('kv_cache')?{instance:'worker',engine:'0'}:{};
     const row=range?{metric,values:[[stamp,'50']]}:{metric,value:[stamp,'50']};
     return new Response(JSON.stringify({status:'success',data:{resultType:range?'matrix':'vector',result:[row]}}));
   };
   try{
-    for(const [counterUnit,count] of [['unknown',2],['tokens',6],['blocks',4],['requests',4]] as const){
+    for(const [counterUnit,count] of [['unknown',1],['tokens',5],['blocks',3],['requests',3]] as const){
       const cfg={...config,counterUnit}; const api=createApiConfig({VITE_PROMETHEUS_API_PREFIX:`/api/cache-${counterUnit}`});
       const plan=replayCachePlan(task,1200,cfg)!;const before=paths.length;
       const result=await fetchReplayCache(task,plan,cfg,api);
@@ -106,17 +124,19 @@ test('cache requests respect counter units, custom routes, deduplication and ind
       assert.equal(result.hitTokens.current.value,counterUnit==='tokens'?50:undefined);
       assert.equal(result.hitRate.current.value,counterUnit==='unknown'?undefined:50);
       if(counterUnit==='tokens'){
-        assert(result.kv.current.error?.includes('503'));assert.equal(result.kv.trend.series.length,1);
+        assert(result.kv.current.error?.includes('503'));assert(result.kv.trend.error?.includes('503'));
+        assert.equal(result.kv.current.value,undefined);assert.equal(result.kv.trend.series.length,0);
         assert.equal(result.hitTokens.trend.series.length,1);
       }else{
-        assert.equal(result.kv.current.value,50);
+        assert.equal(result.kv.current.value,50);assert.equal(result.kv.current.observedAt,1001);
         await fetchReplayCache(task,plan,cfg,api); assert.equal(paths.length-before,count,'successful cache queries share URL deduplication');
       }
     }
+    assert(paths.every(url=>!(url.searchParams.get('query')!.includes('kv_cache')&&url.searchParams.get('start')===url.searchParams.get('end'))),'KV card must derive from the trend range query');
   }finally{globalThis.fetch=originalFetch;if(originalWindow===undefined)delete(globalThis as any).window;else globalThis.window=originalWindow;}
 });
 
-test('ended cache cards use their historical observation time on a backend without @ support', async () => {
+test('ended cache cards keep the historical window; KV card shows the replay peak without a single-point query', async () => {
   const originalFetch=globalThis.fetch, originalWindow=globalThis.window;
   (globalThis as any).window={setTimeout:globalThis.setTimeout};
   const paths:URL[]=[];
@@ -134,9 +154,11 @@ test('ended cache cards use their historical observation time on a backend witho
     const result=await fetchReplayCache(ended,plan,config,createApiConfig({VITE_PROMETHEUS_API_PREFIX:'/api/cache-legacy'}));
     assert.equal(result.kv.current.error,undefined);
     assert.equal(result.kv.current.value,42);
-    assert.equal(result.kv.current.observedAt,1131);
-    assert.equal(result.kv.current.series[0].points[0].timestamp,1131);
-    assert(paths.some(url=>url.searchParams.get('start')==='1131'&&url.searchParams.get('end')==='1131'));
+    assert.equal(result.kv.current.observedAt,1001);
+    assert.equal(result.kv.current.series[0].points[0].timestamp,1001);
+    assert(paths.every(url=>!(url.searchParams.get('query')!.includes('kv_cache')&&url.searchParams.get('start')===url.searchParams.get('end'))),'KV card must derive from the trend range query');
+    // 命中率/token 卡仍在原任务的固定时刻单点求值。
+    assert(paths.some(url=>url.searchParams.get('start')==='1131'&&url.searchParams.get('end')==='1131'&&!url.searchParams.get('query')!.includes('kv_cache')));
     assert(paths.every(url=>Number(url.searchParams.get('end'))===1131));
   }finally{globalThis.fetch=originalFetch;if(originalWindow===undefined)delete(globalThis as any).window;else globalThis.window=originalWindow;}
 });

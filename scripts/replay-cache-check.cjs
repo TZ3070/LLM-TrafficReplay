@@ -45,7 +45,7 @@ const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
             const values=key==='kv'?[64,50]:key==='hitRate'?[68]:[1280];
             const result=(key==='hitRate'&&emptyRate||key==='kv'&&missingKV)?[]:values.map((value,i)=>{
               const metric=key==='kv'?{model_name:'model-v2',deployment:'replay-deploy',instance:'worker:8000',engine:String(i)}:{};
-              const samples=[];if(isRange)for(let time=start;time<=end;time+=step)samples.push([time,String(value-(end-time)*.01)]);
+              const samples=[];if(isRange)for(let time=start;time<=end;time+=step)samples.push([time,String(value-(key==='kv'?0:(end-time)*.01))]);
               return isRange?{metric,values:samples}:{metric,value:[at,String(value)]};
             });
             body={status:'success',data:{resultType:isRange?'matrix':'vector',result}};
@@ -89,7 +89,7 @@ const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
     task={...task,status:'running',started_at:now-180+.75,pausable:true,revision:2};
     await page.clock.runFor(2500);
     await expect(kv.locator('.metric-value')).toContainText('64');
-    await expect(kv).toContainText('实例最大值');await expect(kv).toContainText('engine=0');
+    await expect(kv).toContainText('当前实例最大值');await expect(kv).toContainText('engine=0');
     await expect(section.locator('[data-cache-chart="kv"] .cache-legend>span')).toHaveCount(2);
     await expect(section).toContainText('deployment=replay-deploy');
     await expect(section.getByRole('checkbox',{name:'相对时间',exact:true})).toBeChecked();

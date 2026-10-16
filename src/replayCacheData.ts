@@ -11,7 +11,7 @@ export interface ReplayCacheConfig {
 export type CacheMetricKey = 'kv' | 'hitRate' | 'hitTokens';
 export interface CacheResult { series: Series[]; value?: number; name?: string; observedAt?: number; error?: string }
 export type CacheData = Record<CacheMetricKey, { current: CacheResult; trend: CacheResult }>;
-export interface CachePlan { range: TimeRange; rateRange?: TimeRange; evaluatedAt: number; settleAfter?: number }
+export interface CachePlan { range: TimeRange; rateRange?: TimeRange; evaluatedAt: number; terminal: boolean; settleAfter?: number }
 export const emptyCacheData = (): CacheData => ({ kv: { current: { series: [] }, trend: { series: [] } }, hitRate: { current: { series: [] }, trend: { series: [] } }, hitTokens: { current: { series: [] }, trend: { series: [] } } });
 
 /** 当前部署已确认 hits/queries 按 token 计数；其他部署可显式覆盖单位，不按指标后缀猜测。 */
@@ -46,7 +46,7 @@ export function replayCachePlan(replay: Replay, now: number, config: ReplayCache
   const start = Math.ceil(replay.startedAt);
   if (evaluatedAt < start) return;
   const rateStart = Math.ceil(replay.startedAt + config.windowSeconds);
-  return { range: { start, end: evaluatedAt }, evaluatedAt,
+  return { range: { start, end: evaluatedAt }, evaluatedAt, terminal: isTerminalReplay(replay.status),
     rateRange: rateStart <= evaluatedAt ? { start: rateStart, end: evaluatedAt } : undefined,
     settleAfter: finalTime === undefined ? undefined : finalTime + 30 };
 }
@@ -65,6 +65,23 @@ export function cacheQueries(replay: Replay, config: ReplayCacheConfig): Record<
   const rate = (metric: string) => `sum(rate(${metric}${f}[${promDuration(config.windowSeconds)}]))`;
   const hits = rate(config.hitsMetric), queries = rate(config.queriesMetric);
   return { kv, hitRate: `(100 * ${hits} / ${queries}) and (${queries} > 0)`, hitTokens: hits };
+}
+
+/**
+ * KV 卡片从趋势区间结果推导，不再单独单点求值：与曲线严格一致，闸门失败只回退到前一个有效点。
+ * 进行中取各实例最后有效点的最大值；终态取全程峰值（跨序列与并列均取更早时刻，即首次达到峰值的时刻）。
+ */
+export function deriveKvCurrent(trend: CacheResult, peak: boolean): CacheResult {
+  if (trend.error) return { series: [], error: trend.error };
+  const picks = trend.series.flatMap(s => {
+    const defined = s.points.filter(p => p.value !== undefined && Number.isFinite(p.value));
+    if (!defined.length) return [];
+    const point = peak ? defined.reduce((a, b) => b.value! > a.value! ? b : a) : defined[defined.length - 1];
+    return [{ id: s.id, name: s.name, point: { timestamp: point.timestamp, value: point.value! } }];
+  });
+  if (!picks.length) return { series: [] };
+  const best = picks.sort((a, b) => b.point.value - a.point.value || a.point.timestamp - b.point.timestamp)[0];
+  return { series: picks.map(pick => ({ id: pick.id, name: pick.name, points: [pick.point] })), value: best.point.value, name: best.name, observedAt: best.point.timestamp };
 }
 
 interface PromSeries { metric: Record<string, string>; value?: [number, string]; values?: [number, string][] }
@@ -108,18 +125,33 @@ export function parseCacheResult(raw: unknown, key: CacheMetricKey, type: 'vecto
 export async function fetchReplayCache(replay: Replay, plan: CachePlan, config: ReplayCacheConfig, api: ApiConfig): Promise<CacheData> {
   const data = emptyCacheData();
   const queries = cacheQueries(replay, config);
-  const keys: CacheMetricKey[] = ['kv', ...(plan.rateRange && config.counterUnit !== 'unknown' ? ['hitRate' as const, ...(config.counterUnit === 'tokens' ? ['hitTokens' as const] : [])] : [])];
-  await Promise.all(keys.flatMap(key => (['current', 'trend'] as const).map(async kind => {
-    // 单点 query_range 在指定时刻求值，兼容拒绝 @ 修饰符的即时查询代理；终态仍查询原任务时间。
-    const range = kind === 'current' ? { start: plan.evaluatedAt, end: plan.evaluatedAt } : key === 'kv' ? plan.range : plan.rateRange!;
-    // 保留已有 Prometheus 缓存与去重；显式步长限制为约 300 点且不密于采集间隔。
-    const path = promPath(queries[key], range, api);
-    const url = new URL(path, 'http://dashboard.local');
+  // 保留已有 Prometheus 缓存与去重；显式步长限制为约 300 点且不密于采集间隔。
+  const fetchParsed = async (key: CacheMetricKey, query: string, range: TimeRange) => {
+    const url = new URL(promPath(query, range, api), 'http://dashboard.local');
     const step = Math.max(config.scrapeSeconds, Math.ceil((range.end - range.start) / 300));
     url.searchParams.set('step', String(step));
-    try { data[key][kind] = parseCacheResult(await requestPrometheus(url.pathname + url.search), key, 'matrix', plan.evaluatedAt, { ...range, step }); }
+    return parseCacheResult(await requestPrometheus(url.pathname + url.search), key, 'matrix', plan.evaluatedAt, { ...range, step });
+  };
+  // KV 只发趋势区间查询；卡片由该结果推导，与曲线严格一致，终态取全程峰值。
+  const kvQuery = (async () => {
+    try {
+      const trend = await fetchParsed('kv', queries.kv, plan.range);
+      data.kv.trend = trend;
+      data.kv.current = deriveKvCurrent(trend, plan.terminal);
+    } catch (error) {
+      const message = (error as Error).message;
+      data.kv.trend = { series: [], error: message };
+      data.kv.current = { series: [], error: message };
+    }
+  })();
+  // 命中率/token 卡保持 start=end 的单点求值，兼容拒绝 @ 修饰符的即时查询代理；终态仍查询原任务时间。
+  const rateKeys: CacheMetricKey[] = plan.rateRange && config.counterUnit !== 'unknown'
+    ? ['hitRate' as const, ...(config.counterUnit === 'tokens' ? ['hitTokens' as const] : [])] : [];
+  await Promise.all([kvQuery, ...rateKeys.flatMap(key => (['current', 'trend'] as const).map(async kind => {
+    const range = kind === 'current' ? { start: plan.evaluatedAt, end: plan.evaluatedAt } : plan.rateRange!;
+    try { data[key][kind] = await fetchParsed(key, queries[key], range); }
     catch (error) { data[key][kind] = { series: [], error: (error as Error).message }; }
-  })));
+  }))]);
   return data;
 }
 
@@ -144,6 +176,8 @@ export function demoReplayCache(plan: CachePlan, config: ReplayCacheConfig): Cac
       }),
     }));
     data[key].trend = { series, observedAt: plan.evaluatedAt };
+    // KV 与后端模式同源：从趋势推导当前值，终态显示全程峰值。
+    if (key === 'kv') { data[key].current = deriveKvCurrent(data[key].trend, plan.terminal); continue; }
     const current = series.map(s => ({ ...s, points: [s.points.at(-1)!] }));
     const max = current.reduce((a, b) => a.points[0].value > b.points[0].value ? a : b);
     data[key].current = { series: current, value: max.points[0].value, name: max.name, observedAt: plan.evaluatedAt };

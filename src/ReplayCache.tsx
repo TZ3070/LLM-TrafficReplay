@@ -84,7 +84,7 @@ export default function ReplayCache({ replay, mode, api, config, language, refre
     </select></label><span>{t('按实际指标定义选择；hits 和 queries 必须使用相同单位，仅 token 计数可展示 token/s。')}</span></div>}
     <div className="cache-cards">{cards.map(({ key, title, icon: Icon }) => {
       const current = data[key].current;
-      const note = current.error ? t(current.value === undefined ? '查询失败 · 查看详情' : '查询失败 · 显示上次数据') : current.value === undefined ? emptyNote(key) : key === 'kv' ? t('实例最大值') : `${rateNote} · ${countNote}`;
+      const note = current.error ? t(current.value === undefined ? '查询失败 · 查看详情' : '查询失败 · 显示上次数据') : current.value === undefined ? emptyNote(key) : key === 'kv' ? t(terminal ? '回放期间实例峰值' : '当前实例最大值') : `${rateNote} · ${countNote}`;
       return <div className="metric-card" key={key} data-cache-metric={key}>
         <div className="metric-label">{t(title)}<Icon size={16}/></div>
         <div className="metric-value">{formatValue(current.value, key === 'hitTokens' ? 2 : 1, language)}<span>{key === 'hitTokens' ? 'token/s' : '%'}</span></div>

@@ -59,7 +59,7 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     await hoverLoad();
     await expect(load).toContainText('正在处理 · review-model 20');
     holdA=true;await page.clock.runFor(31000);
-    await expect.poll(()=>oldCount).toBeGreaterThanOrEqual(9); // 2 load + 5 latency + at least 2 KV queries; token mode adds prefix queries.
+    await expect.poll(()=>oldCount).toBeGreaterThanOrEqual(9); // 2 load + 5 latency + 1 KV query per 30s round; token mode adds prefix queries.
     task={...task,revision:2,target:{metrics_labels:{model_name:'review-model',deployment:'b'}}};
     await page.clock.runFor(2500);
     await expect(page.locator('.replay-cache-section')).toContainText('deployment=b');
@@ -80,7 +80,7 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     await expect(kv.locator('.metric-value')).toContainText('40');
     await expect(ttft.locator('.metric-value')).toContainText('0.333');
     fs.mkdirSync('test-results',{recursive:true});
-    await page.locator('[data-cache-chart="kv"]').screenshot({path:'test-results/replay-cache-single-point.png'});
+    await page.locator('[data-cache-chart="kv"]').screenshot({path:'test-results/replay-cache-derived.png'});
     task={...task,status:'cancelled',finished_at:Math.floor(await page.evaluate(()=>Date.now()/1000)),revision:3,cancellable:false};
     await page.clock.runFor(2500);await page.clock.runFor(95000);
     await expect(page.locator('.replay-cache-section')).toContainText('最终观测已固定');
