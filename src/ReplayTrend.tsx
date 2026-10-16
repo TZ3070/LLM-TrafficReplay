@@ -4,7 +4,7 @@ import CacheTrend from './CacheTrend';
 import { promDuration } from './data';
 import { localizeMessage, translate, type Language } from './i18n';
 import { isTerminalReplay } from './replay';
-import { demoReplayTrend, emptyReplayTrendData, fetchReplayTrend, replayTrendHasInsufficientWindow, replayTrendPlan, retainReplayTrend, type ReplayTrendConfig, type ReplayTrendData, type ReplayTrendPlan } from './replayTrendData';
+import { demoReplayTrend, emptyReplayTrendData, fetchReplayTrend, replayTrendCanSettle, replayTrendHasInsufficientWindow, replayTrendPlan, retainReplayTrend, type ReplayTrendConfig, type ReplayTrendData, type ReplayTrendPlan } from './replayTrendData';
 import { fullDateTime } from './time';
 import type { Replay } from './types';
 
@@ -32,7 +32,8 @@ export default function ReplayTrend({ replay, mode, api, config, language, refre
     const load = async () => {
       const task = currentTask.current;
       if (!live || busy || done || document.hidden || task?.id !== replay.id) return;
-      const nextPlan = replayTrendPlan(task, Date.now() / 1000, config);
+      const requestedAt = Date.now() / 1000;
+      const nextPlan = replayTrendPlan(task, requestedAt, config);
       if (!nextPlan) {
         clearTimeout(startTimer);
         const firstAt = Math.ceil(task.startedAt! + config.windowSeconds);
@@ -45,7 +46,7 @@ export default function ReplayTrend({ replay, mode, api, config, language, refre
         const next = mode === 'demo' ? demoReplayTrend(task, nextPlan, config) : await fetchReplayTrend(task, nextPlan, config, api);
         if (!live) return;
         setData(previous => retainReplayTrend(previous, next));
-        if (nextPlan.settleAfter !== undefined && Date.now() / 1000 >= nextPlan.settleAfter) { done = true; setSettled(true); }
+        if (replayTrendCanSettle(nextPlan, requestedAt)) { done = true; setSettled(true); }
       } catch (error) {
         if (live) {
           setData(previous => retainReplayTrend(previous, { series: [], error: (error as Error).message }));

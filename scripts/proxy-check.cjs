@@ -19,11 +19,15 @@ const http = require('node:http');
     const env={BACKEND_URL:address(upstreams[0]),REPLAY_BACKEND_URL:address(upstreams[1])};
     assert.equal(createBackendProxy({}),undefined);
     assert.equal(createBackendProxy({BACKEND_URL:env.BACKEND_URL})['/api'].target,env.BACKEND_URL);
+    assert.equal(createBackendProxy(env)['/api'].proxyTimeout,310000);
+    assert.equal(createBackendProxy(env)['/api'].timeout,310000);
     const proxy=createBackendProxy({...env,VITE_REPLAY_CREATE_PATH:'/api/custom.create',VITE_REPLAY_STATUS_PATH:'/api/custom.status/{id}',VITE_REPLAY_ACTIVE_PATH:'/api/custom.active',VITE_REPLAY_CANCEL_PATH:'/api/custom.cancel/{id}',VITE_REPLAY_PAUSE_PATH:'/api/custom.pause/{id}',VITE_REPLAY_RESUME_PATH:'/api/custom.resume/{id}'});
     // 使用实际 Vite 代理验证不同后端、路径优先级与认证头透传。
     vite=await createServer({configFile:false,server:{host:'127.0.0.1',port:0,proxy},optimizeDeps:{noDiscovery:true,include:[]}});
     await vite.listen();
     const origin=`http://127.0.0.1:${vite.httpServer.address().port}`;
+    const metricsAuth=await (await fetch(origin+'/api/prometheus/query?query=up',{headers:{Authorization:'Bearer independent-metrics'}})).json();
+    assert.equal(metricsAuth.authorization,'Bearer independent-metrics');
     for(const [path,backend] of [
       ['/api/prometheus/query?query=up','metrics'],
       ['/api/prometheus/query_range?start=100&end=200','metrics'],

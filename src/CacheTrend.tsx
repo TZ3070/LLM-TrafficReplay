@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as echarts from 'echarts';
 import { chartTime, formatRelativeTime } from './chartTime';
 import { formatValue } from './data';
@@ -9,10 +9,11 @@ import type { Series, TimeRange } from './types';
 const colors = ['#6d78ec', '#10a78e', '#ba72d6', '#c39732', '#477db7', '#d37888'];
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-export default function CacheTrend({ series, range, relativeOrigin, percent, unit, decimals, language, label, emptyNote }: {
-  series: Series[]; range: TimeRange; relativeOrigin?: number; percent: boolean; unit?: string; decimals?: number; language: Language; label: string; emptyNote: string;
+export default function CacheTrend({ series, range, relativeOrigin, percent, unit, decimals, language, label, emptyNote, interactiveLegend = false }: {
+  series: Series[]; range: TimeRange; relativeOrigin?: number; percent: boolean; unit?: string; decimals?: number; language: Language; label: string; emptyNote: string; interactiveLegend?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null), chart = useRef<echarts.ECharts>();
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     const instance = echarts.init(ref.current!); chart.current = instance;
     const observer = new ResizeObserver(() => instance.resize()); observer.observe(ref.current!);
@@ -24,6 +25,7 @@ export default function CacheTrend({ series, range, relativeOrigin, percent, uni
     const displayDecimals = decimals ?? (percent ? 1 : 2);
     chart.current?.setOption({
       animation: false, grid: { left: 52, right: 22, top: 22, bottom: 46 },
+      legend: { show: false, data: series.map(s => s.name), selected: Object.fromEntries(series.map(s => [s.name, !hidden.has(s.id)])) },
       xAxis: { type: time.type, min: time.min, max: time.max, splitNumber: ref.current!.clientWidth < 500 ? 3 : 6,
         minInterval: time.relative ? 1 : undefined,
         axisLine: { lineStyle: { color: '#e5e9f0' } }, axisTick: { show: false }, splitLine: { show: false },
@@ -46,10 +48,12 @@ export default function CacheTrend({ series, range, relativeOrigin, percent, uni
         data: s.points.map(p => [time.toAxis(p.timestamp), p.value !== undefined && Number.isFinite(p.value) ? p.value : null]),
       })),
     }, true);
-  }, [series, range, relativeOrigin, percent, unit, decimals, language]);
+  }, [series, range, relativeOrigin, percent, unit, decimals, language, hidden]);
   const hasData = series.some(s => s.points.some(p => p.value !== undefined));
   return <>
     <div className="cache-chart-area"><div ref={ref} className="cache-trend" role="img" aria-label={label}/>{!hasData && <div className="cache-empty">{emptyNote}</div>}</div>
-    {series.length > 0 && <div className="cache-legend">{series.map((s, i) => <span key={s.id} title={s.name}><i style={{ background: colors[i % colors.length] }}/>{s.name}</span>)}</div>}
+    {series.length > 0 && <div className="cache-legend">{series.map((s, i) => interactiveLegend
+      ? <button type="button" key={s.id} title={s.name} aria-pressed={!hidden.has(s.id)} onClick={() => setHidden(previous => { const next = new Set(previous); if (next.has(s.id)) next.delete(s.id); else next.add(s.id); return next; })}><i style={{ background: colors[i % colors.length] }}/>{s.name}</button>
+      : <span key={s.id} title={s.name}><i style={{ background: colors[i % colors.length] }}/>{s.name}</span>)}</div>}
   </>;
 }

@@ -6,7 +6,7 @@ import { minify } from 'terser';
 export function createBackendProxy(env) {
   if(env.VITE_REPLAY_AUTH_MODE==='proxy' && !env.BENCHMARK_API_KEY?.trim())throw new Error('代理认证模式需要配置服务端 BENCHMARK_API_KEY');
   const proxyOptions = (address,replay=false) => {
-    const options = { target:address, changeOrigin:true };
+    const options = { target:address, changeOrigin:true, ...(!replay ? { timeout:310000, proxyTimeout:310000 } : {}) };
     // 只给回放代理注入密钥；非 VITE_ 配置不会进入浏览器产物。
     if(replay && env.VITE_REPLAY_AUTH_MODE==='proxy')options.headers={Authorization:`Bearer ${env.BENCHMARK_API_KEY.trim()}`};
     if(env.BACKEND_PROXY_DEBUG==='true') {

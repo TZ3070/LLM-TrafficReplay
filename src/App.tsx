@@ -5,6 +5,8 @@ import ReplayProgress from './ReplayProgress';
 import LatencyCard, { LATENCY_CARDS } from './LatencyCard';
 import ReplayLatency from './ReplayLatency';
 import ReplayTrend from './ReplayTrend';
+import ReplayThroughput from './ReplayThroughput';
+import { createReplayThroughputConfig } from './replayThroughputData';
 import ReplayCache from './ReplayCache';
 import { createReplayCacheConfig } from './replayCacheData';
 import { createReplayLatencyConfig } from './replayLatencyData';
@@ -13,7 +15,7 @@ import { readMode, readSnapshot, rememberMode, saveSnapshot } from './replayStor
 import { useReplay } from './useReplay';
 import { relativeTimeUnit } from './chartTime';
 import { DISPLAY_TIME_ZONE, clock, dateTime, fullDateTime, toInput, fromInput } from './time';
-import { demoLoad, demoModels, emptyMetrics, fetchModels, fetchLoad, fetchMetrics, formatValue, MODEL_DISCOVERY_QUERY, promDuration, queryTiming, retainFailedLoad } from './data';
+import { demoLoad, demoModels, emptyMetrics, fetchModels, fetchLoad, fetchMetrics, formatValue, MODEL_DISCOVERY_QUERY, promDuration, queryTiming, retainFailedLoad, setMetricsAuth } from './data';
 import type { LoadData, Metrics, Model, Replay, ReplaySpeed, TimeRange } from './types';
 import { createApiConfig } from './apiConfig';
 import { localizeMessage, readLanguage, rememberLanguage, translate, type Language } from './i18n';
@@ -28,6 +30,7 @@ const EMPTY: LoadData = { running:[],waiting:[],errors:[] };
 const API = createApiConfig(import.meta.env);
 const REPLAY_LATENCY = createReplayLatencyConfig(import.meta.env);
 const REPLAY_CACHE = createReplayCacheConfig(import.meta.env, REPLAY_LATENCY.scrapeSeconds);
+const REPLAY_THROUGHPUT = createReplayThroughputConfig(import.meta.env, REPLAY_LATENCY.scrapeSeconds);
 // 路径由构建时环境配置覆盖；回放接口为待与真实后端联调的契约。
 const CREATE = import.meta.env.VITE_REPLAY_CREATE_PATH || '/api/replays';
 const STATUS = import.meta.env.VITE_REPLAY_STATUS_PATH || '/api/replays/{id}';
@@ -82,6 +85,10 @@ export default function App() {
   const [authHeader,setAuthHeader]=useState<'x-litellm-key'|'x-api-key'|'Authorization'>('Authorization');
   const [authSettings,setAuthSettings]=useState({apiKey:'',authHeader:'Authorization' as 'x-litellm-key'|'x-api-key'|'Authorization'});
   const [settingsToken,setSettingsToken]=useState(0);
+  const [metricsKey,setMetricsKey]=useState('');
+  const [metricsHeader,setMetricsHeader]=useState<'x-api-key'|'Authorization'>('x-api-key');
+  const [metricsIdentity,setMetricsIdentity]=useState(0);
+  const appliedMetrics=useRef({apiKey:'',authHeader:'x-api-key'});
   const [relative,setRelative]=useState(saved.history?.relative || false); // 只控制横轴展示，不改变查询边界或打流速度。
   const [speed,setSpeed]=useState<ReplaySpeed>(1);
   const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:API.modelMetricsMap});
@@ -280,9 +287,10 @@ export default function App() {
           <div className="metrics-context">{t('{model} · 延迟回溯 {window} · 即时查询',{model:model?.name||t('尚未选择模型'),window:promDuration(seconds)})}</div>
           <div className="metrics-grid">{LATENCY_CARDS.map(card=><LatencyCard key={card.key} metricKey={card.key} metric={metrics[card.key]} loading={metricsLoading} language={language}/>)}</div>
         </section>
-        <ReplayLatency key={`latency:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
-        <ReplayTrend key={`trend:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
-        <ReplayCache key={`cache:${mode}:${replay?.id||''}`} replay={replay} mode={mode} api={API} config={REPLAY_CACHE} language={language} refreshToken={refreshToken} taskStatus={replay ? t(statusNames[replay.status]) : undefined}/>
+        <ReplayLatency key={`latency:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
+        <ReplayTrend key={`trend:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
+        <ReplayThroughput key={`throughput:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_THROUGHPUT} language={language} refreshToken={refreshToken}/>
+        <ReplayCache key={`cache:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_CACHE} language={language} refreshToken={refreshToken} taskStatus={replay ? t(statusNames[replay.status]) : undefined}/>
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>
@@ -293,9 +301,21 @@ export default function App() {
       <label className="settings-field">{t('认证头')}<select value={authHeader} onChange={e=>setAuthHeader(e.target.value as typeof authHeader)}><option>Authorization</option><option>x-litellm-key</option><option>x-api-key</option></select></label>
       <label className="settings-field">{t('认证值')}<input type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={authHeader==='Authorization'?'Bearer <BENCHMARK_API_KEY>':t('回放接口密钥')}/></label>
       {authHeader==='Authorization'&&<p className="settings-note">{t('Benchmark 使用服务端 BENCHMARK_API_KEY。请填写 Bearer 空格加实际密钥，不带尖括号；页面不会自动补前缀。')}</p>}
-      <p className="settings-note">{t('凭据仅保存在页面内存中，不写入本地存储。Prometheus 查询不携带认证。')}</p>
+      <p className="settings-note">{t('回放凭据仅保存在页面内存中，不写入本地存储，不附带到指标查询。')}</p>
       </>}
-      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling} onClick={()=>{setAuthSettings({apiKey:apiKey.trim(),authHeader});setSettingsToken(t=>t+1);setSettingsOpen(false);replayController.recover();}}>{t('应用设置')}</button></div>
+      <details className="metrics-settings"><summary>{t('指标认证（可选）')}</summary>
+        <label>{t('指标认证头')}<select value={metricsHeader} onChange={event=>setMetricsHeader(event.target.value as typeof metricsHeader)}><option>x-api-key</option><option>Authorization</option></select></label>
+        <label>{t('指标认证值')}<input type="password" autoComplete="off" value={metricsKey} onChange={event=>setMetricsKey(event.target.value)} placeholder={metricsHeader==='Authorization'?'Bearer <API_KEY>':'API_KEY'}/></label>
+        <p>{t('仅用于 Prometheus 查询，留空则不携带认证。凭据仅在页面内存中保存；Authorization 请填写完整 Bearer 值。')}</p>
+      </details>
+      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling} onClick={()=>{
+        const metricsAuth={apiKey:metricsKey.trim(),authHeader:metricsHeader};
+        if(metricsAuth.apiKey!==appliedMetrics.current.apiKey || metricsAuth.authHeader!==appliedMetrics.current.authHeader){
+          setMetricsAuth(metricsAuth);appliedMetrics.current=metricsAuth;setMetricsIdentity(value=>value+1);setRefreshToken(value=>value+1);
+          setHistory(EMPTY);setMetrics(emptyMetrics);setReplayData(EMPTY);
+        }
+        setAuthSettings({apiKey:apiKey.trim(),authHeader});setSettingsToken(t=>t+1);setSettingsOpen(false);replayController.recover();
+      }}>{t('应用设置')}</button></div>
     </section></div>}
   </div>;
 }

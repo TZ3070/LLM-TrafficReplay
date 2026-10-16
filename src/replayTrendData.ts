@@ -21,15 +21,15 @@ export interface ReplayTrendData {
 export const emptyReplayTrendData = (): ReplayTrendData => ({ series: [] });
 
 /** 完整 rate 窗口不能覆盖回放前的流量；短任务没有足够观测时段时明确结束等待。 */
-export function replayTrendHasInsufficientWindow(replay: Replay, config: ReplayTrendConfig): boolean {
+export function replayTrendHasInsufficientWindow(replay: Replay, config: ReplayTrendConfig, tailSeconds = 2 * config.scrapeSeconds): boolean {
   return replay.startedAt !== undefined && isTerminalReplay(replay.status) && replay.finishedAt !== undefined
-    && Math.ceil(replay.finishedAt + 2 * config.scrapeSeconds) < Math.ceil(replay.startedAt + config.windowSeconds);
+    && Math.ceil(replay.finishedAt + tailSeconds) < Math.ceil(replay.startedAt + config.windowSeconds);
 }
 
-export function replayTrendPlan(replay: Replay, now: number, config: ReplayTrendConfig): ReplayTrendPlan | undefined {
+export function replayTrendPlan(replay: Replay, now: number, config: ReplayTrendConfig, tailSeconds = 2 * config.scrapeSeconds): ReplayTrendPlan | undefined {
   if (replay.startedAt === undefined) return;
   const finalTime = isTerminalReplay(replay.status) && replay.finishedAt !== undefined
-    ? Math.ceil(replay.finishedAt + 2 * config.scrapeSeconds) : undefined;
+    ? Math.ceil(replay.finishedAt + tailSeconds) : undefined;
   const evaluatedAt = Math.floor(Math.min(now, finalTime ?? now));
   const start = Math.ceil(replay.startedAt + config.windowSeconds);
   if (evaluatedAt < start) return;
@@ -38,6 +38,11 @@ export function replayTrendPlan(replay: Replay, now: number, config: ReplayTrend
     evaluatedAt,
     settleAfter: finalTime === undefined ? undefined : finalTime + 30,
   };
+}
+
+/** 使用发起时间判定，休眠或慢响应不能将未覆盖尾部的查询误判为最终观测。 */
+export function replayTrendCanSettle(plan: ReplayTrendPlan, requestedAt: number): boolean {
+  return plan.settleAfter !== undefined && requestedAt >= plan.settleAfter && plan.range.end >= plan.settleAfter - 30;
 }
 
 export function replayTrendQuery(replay: Replay, config: ReplayTrendConfig, api: ApiConfig): string {
@@ -116,7 +121,7 @@ export async function fetchReplayTrend(replay: Replay, plan: ReplayTrendPlan, co
   const step = Math.max(config.scrapeSeconds, Math.ceil((plan.range.end - plan.range.start) / 300));
   const url = new URL(promPath(replayTrendQuery(replay, config, api), plan.range, api), 'http://dashboard.local');
   url.searchParams.set('step', String(step));
-  return parseReplayTrend(await requestPrometheus(url.pathname + url.search), replay.metricsLabels?.model_name || replay.metricsName,
+  return parseReplayTrend(await requestPrometheus(url.pathname + url.search, { freshAfter: plan.settleAfter !== undefined && Date.now() / 1000 >= plan.settleAfter ? plan.settleAfter * 1000 : undefined }), replay.metricsLabels?.model_name || replay.metricsName,
     api.mixedLatencyRoleModels, plan.evaluatedAt, { range: plan.range, step });
 }
 

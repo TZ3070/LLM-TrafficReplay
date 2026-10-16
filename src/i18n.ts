@@ -3,6 +3,22 @@ export type Language = 'zh' | 'en';
 const LANGUAGE_KEY = 'trafficReplay.language';
 
 const english: Record<string, string> = {
+  'Token 吞吐率趋势': 'Token throughput trends',
+  '输入 Token': 'Input tokens',
+  '输出 Token': 'Output tokens',
+  '总 Token': 'Total tokens',
+  '输入 / 输出 / 总 Token': 'Input / output / total tokens',
+  '未配置 LiteLLM 目标映射，请配置 targets': 'LiteLLM target mapping is missing. Configure targets.',
+  'LiteLLM 记账窗口吞吐，可能包含其他业务流量': 'LiteLLM recorded window throughput; other traffic may be included',
+  '配置 VITE_REPLAY_THROUGHPUT_CONFIG.targets，将回放目标 model_id 映射为 requested_model；指标来自 LiteLLM，不自动回退到 vLLM。': 'Configure VITE_REPLAY_THROUGHPUT_CONFIG.targets to map the replay target model_id to requested_model. These metrics come from LiteLLM; there is no automatic vLLM fallback.',
+  '先 rate 后求和；缺失或非有限值显示为断点。总吞吐仅合并同轮有效样本；这是记账速率，非逐 Token 解码速度。': 'Rates are calculated before summing. Missing or non-finite samples appear as gaps. Total uses valid samples from the same refresh. This measures recorded token throughput, not per-token decoding speed.',
+  '总吞吐等待同轮输入与输出数据': 'Total is waiting for input and output from the same refresh',
+  '显示最近成功数据': 'Showing latest successful data',
+  '回放凭据仅保存在页面内存中，不写入本地存储，不附带到指标查询。': 'Replay credentials are kept only in page memory and are not sent with metric queries.',
+  '指标认证（可选）': 'Metric authentication (optional)',
+  '指标认证头': 'Metric auth header',
+  '指标认证值': 'Metric auth value',
+  '仅用于 Prometheus 查询，留空则不携带认证。凭据仅在页面内存中保存；Authorization 请填写完整 Bearer 值。': 'Used only for Prometheus queries. Leave empty for no authentication. Credentials stay in page memory; enter the complete Bearer value for Authorization.',
   '回放历史趋势': 'Replay history trends',
   '首 Token 延迟': 'Time to first token',
   'REPLAY TRENDS': 'REPLAY TRENDS',
@@ -238,6 +254,11 @@ export function translate(language: Language, text: string, values: Record<strin
 
 // 数据层/后端错误保留原文存储，显示时翻译已知前端消息；不改写模型名或未知上游详情。
 const errorTranslations: Record<string, string> = {
+  '吞吐率响应包含重复序列': 'Throughput response contains duplicate series',
+  '吞吐率响应模型或格式无效': 'Invalid throughput response model or format',
+  '吞吐率采样点无效': 'Invalid throughput sample',
+  '吞吐率不能为负数': 'Throughput cannot be negative',
+  '吞吐率采样值无效': 'Invalid throughput sample value',
   '缓存筛选标签与回放目标冲突': 'Cache filters conflict with the replay target',
   '缓存指标包含重复序列': 'Cache metrics contain duplicate series',
   '缓存指标时间戳无效': 'Invalid cache metric timestamp',
@@ -278,6 +299,7 @@ const errorTranslations: Record<string, string> = {
 export function localizeMessage(language: Language, message: string): string {
   if (language === 'zh') return message;
   let result = message
+    .replace(/请求超时（([\d.]+)s）/g, 'Request timed out ($1s)')
     .replace(/指标模型 (.+?) 对应多个回放别名，请配置唯一对应关系/g, 'Metric model $1 maps to multiple replay aliases. Configure a unique mapping.')
     .replace(/指标缺少 (\w+) 标签/g, 'Metric is missing the $1 label');
   for (const [source, target] of Object.entries(errorTranslations)) result = result.split(source).join(target);

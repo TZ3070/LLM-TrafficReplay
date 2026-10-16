@@ -165,15 +165,40 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 ### 回放历史趋势（2026-10-16）
 
-“回放历史趋势”位于回放实时延迟卡片下方，当前只展示一张全宽“首 Token 延迟”曲线（TTFT，ms），吞吐率暂不展示或查询。曲线默认使用相对时间，零点为任务实际 `started_at`；取消相对时间后显示上海时间，tooltip 同时保留完整时间和单位。区域每 30 秒刷新，任务切换或部署标签变化时清空旧曲线并忽略旧目标的迟到响应，刷新页面后按已保存任务的原始时间重新查询。
+“回放历史趋势”位于回放实时延迟卡片下方，展示全宽“首 Token 延迟”曲线（TTFT，ms），其下独立展示 Token 吞吐率趋势。曲线默认使用相对时间，零点为任务实际 `started_at`；取消相对时间后显示上海时间，tooltip 同时保留完整时间和单位。区域每 30 秒刷新，任务切换或部署标签变化时清空旧曲线并忽略旧目标的迟到响应，刷新页面后按已保存任务的原始时间重新查询。
 
-每轮只新增一条 `/api/prometheus/query_range`，不新增 Benchmark 接口。TTFT 复用现有延迟卡片的 histogram 配置和表达式，结果乘以 1000 显示毫秒；展示窗口平均值，普通模型按 role 分组并平均 engine，DeepSeek 等配置的模型混合 role。单个空闲 engine 的 NaN 不参与平均，全部缺失、NaN 或无穷值显示为空点；接口省略的中间采样点也会补为空点，避免折线跨过停采区间。无效响应、重复时间戳、查询网格外的点和负延迟均显示查询错误。
+TTFT 每轮一条 `/api/prometheus/query_range`，不新增 Benchmark 接口。TTFT 复用现有延迟卡片的 histogram 配置和表达式，结果乘以 1000 显示毫秒；展示窗口平均值，普通模型按 role 分组并平均 engine，DeepSeek 等配置的模型混合 role。单个空闲 engine 的 NaN 不参与平均，全部缺失、NaN 或无穷值显示为空点；接口省略的中间采样点也会补为空点，避免折线跨过停采区间。无效响应、重复时间戳、查询网格外的点和负延迟均显示查询错误。
 
 趋势只在完整 rate 窗口可用后开始查询，窗口左端为 `ceil(started_at + 窗口)`，不会把回放开始前的流量带入。窗口默认 60 秒，并自动保持为采集间隔的至少 4 倍；采集中显示“等待完整统计窗口”，已结束且补采时段仍不足窗口的任务显示“任务观测时段不足完整统计窗口”并停止等待。等待期间相对横轴也从实际打流的 0 秒开始。终态沿用回放延迟的固定结束时间和 30 秒缓存余量，单项查询失败保留该项最近成功曲线，成功空结果清空旧曲线。指标属于目标部署，可能包含其他业务流量；严格的任务级隔离仍需要专用部署或后端任务级指标。
 
 最终观测时间向上取整到 Unix 整秒。首次查询失败显示“查询失败 · 查看详情”，已有成功结果后的失败保留曲线和观测时间；演示模式也遵守完整窗口，不补造打流起点的数据。趋势测试覆盖窗口、终态恢复、目标标签与自定义指标、毫秒单位、engine/role 聚合、真实零值、空值断点、异常采样点和单次查询步长。`node scripts/replay-trend-check.cjs` 使用模拟 HTTP 检查首 Token 单图、等待与空态、tooltip、错误保留、终态固定、刷新恢复、部署切换及迟到响应、中英文和 320px 布局；可用 `CHECK_BASE_URL` 指定预览地址。尚未使用真实后端指标验证。
 
 此功能无需修改 Benchmark。当前 Benchmark 主要返回 `model_name`，不能自动隔离同模型的多个部署或业务流量；新增卡片与右侧曲线均可能包含其他流量。若需要更精确的部署定位，Benchmark 应在现有 `target.metrics_labels` 返回真实部署标签，且这些标签必须同时存在于负载和五项延迟指标上。若要求严格只统计本次回放，需专用部署或后端提供任务级指标；只添加一个指标中不存在的 `replay_id` 标签无法实现隔离。真实五项指标、采集间隔、代理缓存与 PromQL 支持仍需部署联调确认。
+
+### Token 吞吐率趋势（2026-10-16）
+
+首 Token 曲线下方独立绘制输入、输出、总 Token 三条折线，单位 token/s；图例可以开关。只增加两条 LiteLLM counter 区间查询，不新增 req/s 或即时卡片：
+
+```promql
+sum by (requested_model) (rate(litellm_input_tokens_metric_total{requested_model="明确的别名",job="litellm"}[1m]))
+sum by (requested_model) (rate(litellm_output_tokens_metric_total{requested_model="明确的别名",job="litellm"}[1m]))
+```
+
+部署前在 `.env.local` 配置并重新构建（Docker Compose 同样传入该构建参数）：
+
+```dotenv
+VITE_REPLAY_THROUGHPUT_CONFIG='{"targets":{"回放的target_model或model_id":{"requestedModel":"实际requested_model","labels":{"job":"litellm"}}},"scrapeSeconds":15,"windowSeconds":60,"tailSeconds":60,"timeoutSeconds":300}'
+```
+
+`targets` 必须根据新看板实际链路填写；默认 `{}` 显示配置提示，不猜测 vLLM `model_name` 与 LiteLLM 别名的对应关系。各目标的 `labels` 只填写 LiteLLM 实际拥有的标签，不复用回放的 vLLM `metrics_labels`。`inputMetric` / `outputMetric` 可覆盖指标名。回放若绕过 LiteLLM，这两项指标无法观测它，也不会自动回退到 vLLM。按模型/部署统计可能包含其他业务流量。
+
+窗口 `max(windowSeconds,4×scrapeSeconds)`，默认 60 秒；起点 `ceil(started_at+窗口)`，终态终点 `ceil(finished_at+tailSeconds)`。`tailSeconds` 默认 60，必须按实际异步记账延迟调整；终点后再留 30 秒缓存余量，取得一轮在余量结束后发起、覆盖完整尾部的成功查询后停止。短任务不足完整窗口时显示明确空态；固定时段可在刷新后恢复。窗口速率衡量 LiteLLM 记账，不等于逐 Token 解码速度。足够样本下空闲 counter 的 rate 通常是 0，零值正常绘制；缺失、NaN/Inf 则断线。
+
+每轮输入与输出并发，成功项到达即可绘图；上一轮两项完成或超时后开始下一轮，慢查询不阻塞首 Token 或回放进度。总吞吐仅合并同一轮、同一时间戳的有效值；单项失败保留其最后成功数据与时间，总和保留上一轮成功数据并标记等待，绝不混加新旧分量。成功空响应清除该项旧曲线。步长 `max(scrapeSeconds,ceil(区间秒数/300))`，每序列最多约 301 点；页面隐藏时暂停发起查询，恢复可见时补查。
+
+吞吐查询前端超时默认/上限 300 秒，可降低 `timeoutSeconds`；Vite 与本仓库 nginx 指标代理设为 310 秒。已有后端到 Prometheus 的超时（例如 30 秒）仍需部署端协调，前端延长超时不会改变上游限制。指标请求层单独去重在途请求、成功响应缓存 30 秒；吞吐每轮要求两项都在本轮开始后发起，固定终点的失败重试也不复用上轮分量。TTFT 结束补采绕过余量结束前发起的缓存。指标凭据通过连接设置独立输入，仅留页面内存，切换身份清空缓存及已展示的指标。不要把密钥写入 `VITE_` 配置。
+
+`npm test` 覆盖解析、筛选、同轮总和、缓存、鉴权、超时和休眠后的固定时段判断。`scripts/replay-throughput-check.cjs` 验证慢响应、部分失败、清空、鉴权、图例、终态恢复和手机布局；运行前以 `{"targets":{"token-alias":{"requestedModel":"lite-target","labels":{"job":"litellm"}}},"tailSeconds":60}` 配置重新构建。默认空配置构建则以 `CHECK_THROUGHPUT_CONFIGURED=0` 验证配置提示及不发吞吐查询。`scripts/replay-trend-sleep-check.cjs` 验证首 Token 查询期间休眠后不会提前固定。脚本可通过 `CHECK_BASE_URL` 指定预览地址，均使用模拟 HTTP，不发送真实回放流量。
 
 ### 回放缓存观测（2026-10-15）
 
@@ -237,7 +262,7 @@ VITE_PROMETHEUS_API_PREFIX=/api/prometheus
 
 停止旧服务，再执行 `npm run dev`，刷新页面。这个脚本会重新构建；单独重启 `npm run preview` 不会更新产物中的 VITE_ 变量。生产环境修改这些变量后也必须重新构建并部署，且静态服务器的 `/api` 代理仍须配置。连接设置会显示当前构建使用的路由与当前模型的指标标签。
 
-可直接在浏览器打开看板后端的 `http://<BACKEND_IP>:<BACKEND_PORT>/api/prometheus/query?query=up`。Prometheus 查询不需要 LiteLLM 认证。若正确拼写的路径直接访问仍出现 `API route not found`，请核对看板后端版本与反向代理；修改模型名或 PromQL 不会修复路由 404。若直接访问成功、前端失败，则在 Network 中比较路径，并检查是否仍运行旧构建、是否指向另一服务。
+可直接在浏览器打开看板后端的 `http://<BACKEND_IP>:<BACKEND_PORT>/api/prometheus/query?query=up`。指标查询默认不带认证；若部署启用鉴权，在“连接设置 → 指标认证（可选）”独立填写 x-api-key 或完整 Authorization 值。Benchmark 凭据不会自动附带到指标请求。若正确拼写的路径直接访问仍出现 `API route not found`，请核对看板后端版本与反向代理；修改模型名或 PromQL 不会修复路由 404。若直接访问成功、前端失败，则在 Network 中比较路径，并检查是否仍运行旧构建、是否指向另一服务。
 
 旧看板提供的 `vite.config.js` 将 `/api` 原样代理到 `http://localhost:3000`，没有 rewrite；代理本身不定义或修正 Prometheus 路由。5173 是旧前端地址，并非 API 后端端口，新项目可直接使用同样的 3000 目标。
 

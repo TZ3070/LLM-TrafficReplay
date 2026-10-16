@@ -212,13 +212,19 @@ export function adaptModels(raw: unknown, metricsMap: Record<string, string> = {
   }
   return [...grouped.values()];
 }
-export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay' }
+export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay'; timeoutMs?: number }
 export class ApiError extends Error {
   constructor(message: string, public status: number, public payload?: any, public retryAfterMs?: number) { super(message); }
 }
-// 以完整 URL（包含 query/start/end/step）缓存 30s，也复用正在进行的同一请求。
-// 只缓存无需认证的 Prometheus GET；回放 POST 和携带凭据的模型查询不进入此缓存。
-const promCache = new Map<string, { promise: Promise<any>; expires: number }>();
+// 凭据仅驻留内存。身份切换清缓存，旧身份的迟到响应不能写入新缓存。
+let metricsAuth: ClientOptions = {}, metricsIdentity = 0;
+export function setMetricsAuth(auth: Pick<ClientOptions, 'apiKey' | 'authHeader'>): void {
+  if (metricsAuth.apiKey === auth.apiKey && metricsAuth.authHeader === auth.authHeader) return;
+  metricsAuth = { ...auth, service: 'metrics' }; metricsIdentity++; promCache.clear();
+  rateLimitUntil.delete('metrics');
+}
+// 在途请求独立去重，不受成功缓存的 30s TTL 限制。
+const promCache = new Map<string, { promise: Promise<any>; startedAt: number; expires?: number }>();
 // 指标与回放分别退避，避免指标后端限流阻止 Benchmark 的查询或取消。
 const rateLimitUntil = new Map<string,number>();
 export function request(path: string, options: RequestInit = {}, auth?: ClientOptions): Promise<any> {
@@ -227,29 +233,35 @@ export function request(path: string, options: RequestInit = {}, auth?: ClientOp
   return performRequest(path,options,auth);
 }
 // 由指标入口显式使用缓存，改路由前缀后仍保持 30s 去重，不依赖某一种拼写。
-export function requestPrometheus(path: string): Promise<any> {
-  const existing=promCache.get(path);
-  if(existing && existing.expires>Date.now())return existing.promise;
-  for(const [key,value] of promCache)if(value.expires<=Date.now())promCache.delete(key);
-  const promise=request(path);
-  promCache.set(path,{promise,expires:Date.now()+30000});
-  promise.catch(()=>{if(promCache.get(path)?.promise===promise)promCache.delete(path);});
+export function requestPrometheus(path: string, options: { timeoutMs?: number; freshAfter?: number } = {}): Promise<any> {
+  const key = `${metricsIdentity}:${options.timeoutMs ?? 20000}:${path}`;
+  const existing = promCache.get(key);
+  if (existing && (existing.expires === undefined || existing.expires > Date.now())
+    && existing.startedAt >= (options.freshAfter ?? 0)) return existing.promise;
+  for (const [cachedKey, value] of promCache) if (value.expires !== undefined && value.expires <= Date.now()) promCache.delete(cachedKey);
+  const promise = request(path, {}, { ...metricsAuth, service: 'metrics', timeoutMs: options.timeoutMs });
+  const entry = { promise, startedAt: Date.now(), expires: undefined as number | undefined };
+  promCache.set(key, entry);
+  void promise.then(() => { if (promCache.get(key) === entry) entry.expires = Date.now() + 30000; },
+    () => { if (promCache.get(key) === entry) promCache.delete(key); });
   return promise;
 }
 async function performRequest(path: string, options: RequestInit = {}, auth?: ClientOptions): Promise<any> {
+  const requestMetricsIdentity = metricsIdentity;
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 20000);
+  const timeoutMs = Math.min(300000, Math.max(1000, auth?.timeoutMs ?? 20000));
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = new Headers(options.headers);
     if (options.body) headers.set('Content-Type', 'application/json');
-    // 仅显式传入 auth 的调用附带认证头；Prometheus 的调用不传 auth。
+    // 指标凭据和回放凭据由不同入口显式传入。
     if (auth?.apiKey) headers.set(auth.authHeader ?? 'x-litellm-key', auth.apiKey);
     // 相对路径走同源服务：开发/预览由 Vite 代理，生产由静态服务的反向代理转发。
     const response = await fetch(path, { ...options, headers, signal: controller.signal });
     const retryHeader=response.headers.get('Retry-After');
     const retrySeconds=retryHeader !== null && retryHeader.trim() !== '' ? Number(retryHeader) : NaN;
     const retryAfterMs=retryHeader === null ? 60000 : Math.max(1000,Number.isFinite(retrySeconds)?retrySeconds*1000:Date.parse(retryHeader)-Date.now() || 60000);
-    if(response.status===429)rateLimitUntil.set(auth?.service || 'metrics',Date.now()+retryAfterMs);
+    if(response.status===429 && (auth?.service === 'replay' || requestMetricsIdentity === metricsIdentity)) rateLimitUntil.set(auth?.service || 'metrics',Date.now()+retryAfterMs);
     const raw = await response.text();
     let result;
     // 错误只展示路由，不输出查询串或认证头，便于定位后端不存在的接口。
@@ -257,6 +269,9 @@ async function performRequest(path: string, options: RequestInit = {}, auth?: Cl
     try { result = JSON.parse(raw); } catch { throw new ApiError(`HTTP ${response.status} · ${route} · 后端返回非 JSON 响应，请检查代理配置`, response.status); }
     if (!response.ok) throw new ApiError([`HTTP ${response.status}`, route, result?.error, result?.details].filter(Boolean).join(' · '), response.status,result,response.status===429?retryAfterMs:undefined);
     return result;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`请求超时（${timeoutMs / 1000}s）`);
+    throw error;
   } finally { clearTimeout(timeout); }
 }
 // 前缀来自环境配置；URLSearchParams 编码 PromQL，不改变其聚合语义。
