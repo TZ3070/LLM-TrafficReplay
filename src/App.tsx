@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Check, Languages, Layers3, LoaderCircle, Pause, Play, Radio, RefreshCw, Settings2, Terminal, X } from 'lucide-react';
+import { Activity, Check, Languages, Layers3, LoaderCircle, Play, Radio, RefreshCw, Settings2, Terminal, X } from 'lucide-react';
 import LoadChart from './LoadChart';
 import ReplayProgress from './ReplayProgress';
 import LatencyCard, { LATENCY_CARDS } from './LatencyCard';
@@ -84,7 +84,7 @@ export default function App() {
   const [relative,setRelative]=useState(saved.history?.relative || false); // 只控制横轴展示，不改变查询边界或打流速度。
   const [speed,setSpeed]=useState<ReplaySpeed>(1);
   const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:API.modelMetricsMap});
-  const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,controlling,restoredId}=replayController;
+  const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,restoredId}=replayController;
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
   const selectionRef=useRef(selection); selectionRef.current=selection;
   const active=!!replay&&!isTerminalReplay(replay.status);
@@ -265,12 +265,8 @@ export default function App() {
               {replayData.errors.length>0&&<div className="chart-error">{replayData.errors.map(message).join(language==='zh'?'；':'; ')}</div>}
               <div className="task-summary"><div><span>{t('历史区间')}</span><strong>{clock(replay.source.start)} — {clock(replay.source.end)}</strong></div><div><span>{t('回放规则')}</span><strong>{replay.speed==='burst'?'∞':replay.speed!==undefined?t('{speed}× · 按历史间隔调度',{speed:replay.speed}):t('倍速未知')}</strong></div></div>
               <div className="replay-actions"><code title={replay.id}>{replay.id}</code>{active&&<>
-                <button className="button secondary pause-replay" disabled={!ready||cancelling||!!controlling||(replay.status==='paused'?!replay.resumable:!replay.pausable)} onClick={()=>void (replay.status==='paused'?replayController.resume():replayController.pause())}>
-                  {controlling?<LoaderCircle size={14} className="spin"/>:replay.status==='paused'?<Play size={14}/>:<Pause size={14}/>}{t(controlling==='pause'?'正在提交暂停…':controlling==='resume'?'正在提交继续…':replay.status==='paused'?'继续回放':'暂停回放')}
-                </button>
-                <button className="button secondary cancel-replay" disabled={!ready||!replay.cancellable||cancelling||!!controlling||replay.status==='cancelling'} onClick={()=>void replayController.cancel()}>{cancelling&&<LoaderCircle size={14} className="spin"/>}{t(cancelling?'正在提交取消…':replay.status==='cancelling'?'正在取消':'取消回放')}</button>
+                <button className="button secondary cancel-replay" disabled={!ready||!replay.cancellable||cancelling||replay.status==='cancelling'} onClick={()=>void replayController.cancel()}>{cancelling&&<LoaderCircle size={14} className="spin"/>}{t(cancelling?'正在提交取消…':replay.status==='cancelling'?'正在取消':'取消回放')}</button>
               </>}</div>
-              {active&&mode==='backend'&&replay.pausable===undefined&&<div className="replay-caption">{t('当前后端未提供暂停能力，请更新 Benchmark。')}</div>}
               {replay.status==='cancelling'&&<div className="replay-caption">{t('已提交的请求仍可能完成；取消期间继续更新进度。')}</div>}
               <div className="replay-caption">{t('已完成包含处理结束的失败请求；任务结果以状态为准。')}</div>
               <div className="replay-caption">{t(mode==='demo'?replay.speed==='burst'?'模拟回放，一次性发送全部请求并等待处理完成；曲线不代表真实优化效果。':'模拟回放，时长随倍速调整；曲线不代表真实优化效果。':'实例指标可能包含其他流量；回放尾部指标受采集和缓存延迟影响。')}</div>
@@ -297,7 +293,7 @@ export default function App() {
       {authHeader==='Authorization'&&<p className="settings-note">{t('Benchmark 使用服务端 BENCHMARK_API_KEY。请填写 Bearer 空格加实际密钥，不带尖括号；页面不会自动补前缀。')}</p>}
       <p className="settings-note">{t('凭据仅保存在页面内存中，不写入本地存储。Prometheus 查询不携带认证。')}</p>
       </>}
-      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||!!controlling} onClick={()=>{setAuthSettings({apiKey:apiKey.trim(),authHeader});setSettingsToken(t=>t+1);setSettingsOpen(false);replayController.recover();}}>{t('应用设置')}</button></div>
+      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling} onClick={()=>{setAuthSettings({apiKey:apiKey.trim(),authHeader});setSettingsToken(t=>t+1);setSettingsOpen(false);replayController.recover();}}>{t('应用设置')}</button></div>
     </section></div>}
   </div>;
 }

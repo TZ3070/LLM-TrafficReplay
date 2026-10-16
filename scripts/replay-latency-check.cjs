@@ -43,11 +43,8 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
         if(req.method()==='POST'){
           posts.push(url.pathname);
           const action=url.pathname.split('/').at(-1);
-          assert(['pause','resume','cancel'].includes(action),'recovery must not create a replay');
-          task={...task,revision:task.revision+1};
-          if(action==='pause')task={...task,status:'paused',pausable:false,resumable:true};
-          if(action==='resume')task={...task,status:'running',pausable:true,resumable:false};
-          if(action==='cancel'){task={...task,status:'cancelling',cancellable:false,pausable:false,resumable:false};status=202;}
+          assert.equal(action,'cancel','restoring must never create or control a replay');
+          task={...task,status:'cancelling',cancellable:false,pausable:false,resumable:false,revision:task.revision+1};status=202;
           body=task;
         }else if(url.pathname==='/api/replays/active')body={active,task:active?task:null};
         else body=task;
@@ -88,7 +85,9 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     assert.equal(replayQueries().length,replayCount,'left filters must not restart replay latency');
     await expect(ttft.locator('.metric-value')).toContainText('0.222');
 
-    await page.getByRole('button',{name:'暂停回放',exact:true}).click();
+    // 后端侧暂停（如经 API 手动暂停）：无按钮入口时前端仍应如实显示并继续观测。
+    task={...task,status:'paused',pausable:false,resumable:true,revision:task.revision+1};
+    await page.clock.runFor(2500);
     await expect(page.locator('.replay-panel .badge')).toHaveText('已暂停');
     failTTFT=true;emptyITL=true;
     const oldObserved=await ttft.locator('.metric-observed').innerText();
@@ -104,8 +103,9 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     await page.reload();await authenticate();
     await expect(ttft.locator('.metric-value')).toContainText('0.222');
     await expect(page.locator('.replay-panel .badge')).toHaveText('已暂停');
-    assert.deepEqual(posts,['/api/replays/latency-task/pause']);
-    await page.getByRole('button',{name:'继续回放',exact:true}).click();
+    assert.deepEqual(posts,[],'pause/resume buttons are gone; no POST may be sent');
+    task={...task,status:'running',pausable:true,resumable:false,revision:task.revision+1};
+    await page.clock.runFor(2500);
     await expect(page.locator('.replay-panel .badge')).toHaveText('回放中');
     holdE2E=true;
     await page.clock.runFor(31000);
@@ -131,7 +131,7 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     await page.reload();await authenticate();
     await expect(section).toContainText('最终观测已固定');
     assert.equal(replayQueries().at(-1).at,finalAt,'reload of ended task must query its fixed historical instant');
-    assert.equal(posts.length,3);
+    assert.equal(posts.length,1);
     await page.getByRole('button',{name:'Switch to English',exact:true}).click();
     await expect(section).toContainText('Replay live latency');
     await page.setViewportSize({width:320,height:900});
@@ -149,6 +149,6 @@ const base=process.env.CHECK_BASE_URL||'http://127.0.0.1:4173';
     await expect(ttft.locator('.metric-observed')).toHaveCount(0);
     assert.equal(replayQueries().length,beforeNewTask,'new unstarted task must clear old values without querying');
     assert.deepEqual(errors,[]);
-    console.log('PASS: existing cards unchanged; replay-only target/window, warm-up, partial failure timestamps, pause/resume, reload, slow-query cancellation, terminal fixed-time recovery, manual refresh, English and 320px layout.');
+    console.log('PASS: existing cards unchanged; replay-only target/window, warm-up, partial failure timestamps, paused-state display and observation, reload, slow-query cancellation, terminal fixed-time recovery, manual refresh, English and 320px layout.');
   }finally{if(release)release();await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

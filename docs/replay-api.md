@@ -15,12 +15,12 @@
 | `/api/replays` | POST | 创建回放任务，返回任务 ID | Benchmark 提供 |
 | `/api/replays/active?view=status` | GET | 恢复当前活动任务 | Benchmark 提供 |
 | `/api/replays/{id}/cancel` | POST | 请求取消任务 | Benchmark 提供 |
-| `/api/replays/{id}/pause`、`/resume` | POST | 暂停/继续任务 | 前端已接入，Benchmark 需新增 |
+| `/api/replays/{id}/pause`、`/resume` | POST | 暂停/继续任务 | 前端按钮已移除，不再调用；契约保留供手动调用 |
 | `/api/replays/{id}` | GET | 查询状态、计数、实际开始/结束时间、目标指标标签 | Benchmark 提供 |
 | `/api/prometheus/query_range` | GET | 查询历史及回放后的处理/等待曲线 | 使用已有接口 |
 | `/api/prometheus/query` | GET | 模型发现、原有五项延迟及新增五项回放实时延迟 | 使用已有接口 |
 
-前端已支持倍速、活动任务恢复、进度、取消、暂停/继续及刷新后的曲线重建；暂停/继续需要后端实现第 13 节的契约，没有完整任务列表。手动认证刷新后重新输入密钥即可恢复，服务端代理认证模式可自动恢复。
+前端已支持倍速、活动任务恢复、进度、取消及刷新后的曲线重建；暂停/继续按钮已于 2026-10-16 移除，前端不再调用 pause/resume，但仍识别 `paused` 状态（显示“已暂停”、继续观测、可取消），第 13 节契约保留供后端实现与手动调用，没有完整任务列表。手动认证刷新后重新输入密钥即可恢复，服务端代理认证模式可自动恢复。
 
 ```mermaid
 sequenceDiagram
@@ -469,7 +469,7 @@ proxy：设置 `VITE_REPLAY_AUTH_MODE=proxy` 和服务端 `BENCHMARK_API_KEY=原
 
 ## 13. 暂停与继续契约
 
-前端已支持 `paused`，但未修改的 Benchmark 不提供暂停接口。所需后端改动及补丁应用顺序见 [README](../README.md#暂停继续与取消流程2026-10-14)。本次只修改 llm-dashboard，不自动修改或部署 Benchmark。
+前端已于 2026-10-16 移除“暂停回放 / 继续回放”按钮，不再发起 pause/resume 请求；以下契约保留，供后端实现与直接调用 API 的场景参考。前端仍识别 `paused` 状态：显示“已暂停”、进度与指标观测继续、任务可取消，恢复打流需通过后端 API。所需后端改动及补丁应用顺序见 [README](../README.md#暂停继续契约与取消流程2026-10-14)。本次只修改 llm-dashboard，不自动修改或部署 Benchmark。
 
 `POST /api/replays/{id}/pause`、`POST /api/replays/{id}/resume` 沿用回放 Bearer 认证，无请求体，不要求创建幂等键。成功返回 200 和轻量公共任务（不含 results）；非法状态返回 409 + task，未知 ID 返回 404。重复暂停不重置起点；重复继续在 queued/running/draining 安全返回当前状态。
 

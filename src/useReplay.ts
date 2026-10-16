@@ -22,12 +22,11 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
   const [actionError,setActionError]=useState('');
   const [submitting,setSubmitting]=useState(false);
   const [cancelling,setCancelling]=useState(false);
-  const [controlling,setControlling]=useState<'pause'|'resume'>();
   const [restoredId,setRestoredId]=useState<string>();
   const [recoveryToken,setRecoveryToken]=useState(0);
   const [pollToken,setPollToken]=useState(0);
   const authRef=useRef(auth);authRef.current={...auth,service:'replay'};
-  const epoch=useRef(0), actionBusy=useRef(false), cancelBusy=useRef(false), controlBusy=useRef(false);
+  const epoch=useRef(0), actionBusy=useRef(false), cancelBusy=useRef(false);
   const authSignature=`${auth.authHeader}:${auth.apiKey || ''}:${authReady}`;
   const setTask=useCallback((task:Replay | undefined)=>{
     replayRef.current=task;setReplay(task);
@@ -89,16 +88,15 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
     const poll=async()=>{
       const previous=replayRef.current;
       if(!live||busy||document.hidden||previous?.id!==id||isTerminalReplay(previous.status))return;
-      if(cancelBusy.current||controlBusy.current){schedule(2000);return;}
+      if(cancelBusy.current){schedule(2000);return;}
       if(Date.now()<backoffUntil){schedule(backoffUntil-Date.now());return;}
       busy=true;const token=epoch.current;
       try{
         let raw;
         if(mode==='demo'){
-          const replaySpeed=previous.speed,burst=replaySpeed==='burst',duration=replaySpeed==='burst'?45:45/(replaySpeed ?? 1),elapsed=Math.max(0,(previous.pausedAt ?? Date.now()/1000)-(previous.startedAt || 0)-(previous.pausedSeconds || 0));
+          const replaySpeed=previous.speed,burst=replaySpeed==='burst',duration=replaySpeed==='burst'?45:45/(replaySpeed ?? 1),elapsed=Math.max(0,Date.now()/1000-(previous.startedAt || 0));
           raw=previous.status==='cancelling'?{status:'cancelled',finished_at:Date.now()/1000,cancellable:false}
-            : previous.status==='paused'?{status:'paused',pausable:false,resumable:true}
-            : {status:elapsed>=duration?'succeeded':burst||elapsed>=duration*.89?'draining':'running',sent_count:burst?previous.requestCount || 0:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/(duration*.89))),completed_count:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/duration)),finished_at:elapsed>=duration?(previous.startedAt || 0)+duration+(previous.pausedSeconds || 0):undefined,cancellable:elapsed<duration,pausable:!burst&&elapsed<duration*.89,resumable:false};
+            : {status:elapsed>=duration?'succeeded':burst||elapsed>=duration*.89?'draining':'running',sent_count:burst?previous.requestCount || 0:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/(duration*.89))),completed_count:Math.min(previous.requestCount || 0,Math.floor((previous.requestCount || 0)*elapsed/duration)),finished_at:elapsed>=duration?(previous.startedAt || 0)+duration:undefined,cancellable:elapsed<duration,pausable:!burst&&elapsed<duration*.89,resumable:false};
         } else raw=await request(lightweight(taskPath(paths.status,id)),{},authRef.current);
         const latest=replayRef.current;
         if(!live||epoch.current!==token||latest?.id!==id)return;
@@ -125,7 +123,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
   },[replay?.id,ready,mode,authSignature,pollToken,paths.status,metricsMap,setTask]);
 
   const submit=async(op:PendingReplay)=>{
-    if(actionBusy.current || cancelBusy.current || controlBusy.current || !ready || (replayRef.current&&!isTerminalReplay(replayRef.current.status)))return;
+    if(actionBusy.current || cancelBusy.current || !ready || (replayRef.current&&!isTerminalReplay(replayRef.current.status)))return;
     actionBusy.current=true;setSubmitting(true);setActionError('');
     const token=epoch.current,retrying=mode==='backend'&&pendingRef.current?.key===op.key;
     try{
@@ -157,7 +155,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
   const retryPending=async()=>{if(mode==='backend'&&pendingRef.current)await submit(pendingRef.current);};
   const cancel=async()=>{
     const task=replayRef.current;
-    if(!task || !task.cancellable || cancelBusy.current || controlBusy.current || actionBusy.current || !ready)return;
+    if(!task || !task.cancellable || cancelBusy.current || actionBusy.current || !ready)return;
     cancelBusy.current=true;setCancelling(true);setActionError('');const token=++epoch.current;
     try{
       const raw=mode==='demo'?{status:'cancelling',cancellable:false,cancel_requested_at:Date.now()/1000}:await request(taskPath(paths.cancel,task.id),{method:'POST'},authRef.current);
@@ -172,25 +170,5 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
       }else setActionError(`取消回放失败：${(e as Error).message}`);
     }finally{cancelBusy.current=false;setCancelling(false);setPollToken(value=>value+1);}
   };
-  const control=async(action:'pause'|'resume')=>{
-    const task=replayRef.current;
-    if(!task||!(action==='pause'?task.pausable:task.resumable)||!ready||actionBusy.current||cancelBusy.current||controlBusy.current)return;
-    controlBusy.current=true;setControlling(action);setActionError('');const token=++epoch.current;
-    const prefix=action==='pause'?'暂停回放失败':'继续回放失败';
-    try{
-      const now=Date.now()/1000;
-      const raw=mode==='demo'
-        ? action==='pause'?{status:'paused',paused_at:now,pausable:false,resumable:true}
-          : {status:'running',paused_at:null,paused_seconds:(task.pausedSeconds || 0)+Math.max(0,now-(task.pausedAt ?? now)),pausable:true,resumable:false}
-        : await request(taskPath(paths[action],task.id),{method:'POST'},authRef.current);
-      if(epoch.current===token&&replayRef.current?.id===task.id)setTask(applyReplayResponse(raw,replayRef.current));
-    }catch(e){
-      if(epoch.current!==token||replayRef.current?.id!==task.id)return;
-      if(e instanceof ApiError&&e.status===409&&e.payload?.task){
-        try{setTask(applyReplayResponse(e.payload.task,replayRef.current));}catch(error){setActionError(`${prefix}：${(error as Error).message}`);return;}
-      }
-      setActionError(`${prefix}：${(e as Error).message}`);
-    }finally{controlBusy.current=false;setControlling(undefined);setPollToken(value=>value+1);}
-  };
-  return {replay,replayRef,ready,restoring,recoveryError,actionError,pending,submitting,cancelling,controlling,restoredId,begin,cancel,pause:()=>control('pause'),resume:()=>control('resume'),retryPending,recover:()=>setRecoveryToken(value=>value+1),clearActionError:()=>setActionError('')};
+  return {replay,replayRef,ready,restoring,recoveryError,actionError,pending,submitting,cancelling,restoredId,begin,cancel,retryPending,recover:()=>setRecoveryToken(value=>value+1),clearActionError:()=>setActionError('')};
 }

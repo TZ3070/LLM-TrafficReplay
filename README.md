@@ -51,7 +51,7 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 | src/chartTime.ts、src/time.ts | Unix 秒与图表坐标、相对时间、上海时间输入/显示之间的转换 |
 | vite.config.mjs | 本地同源请求到看板后端的代理 |
 
-演示模式使用 demoModels、固定卡片值和 demoLoad，不调用真实模型。demoLoad 一次生成整个窗口的模拟点；数字倍速的演示任务以 45 秒为基准缩放时长，`∞` 模式立即将已发送数置为总数并进入等待处理阶段，以 45 秒模拟处理完成；任务每 3 秒刷新，暂停时间不计入执行时长，与历史选区时长无关。后端模式的任务状态约每 2 秒查询，指标曲线每 30 秒刷新；实际状态与时间均来自后端，没有 45 秒自动完成规则。
+演示模式使用 demoModels、固定卡片值和 demoLoad，不调用真实模型。demoLoad 一次生成整个窗口的模拟点；数字倍速的演示任务以 45 秒为基准缩放时长，`∞` 模式立即将已发送数置为总数并进入等待处理阶段，以 45 秒模拟处理完成；任务每 3 秒刷新，与历史选区时长无关。后端模式的任务状态约每 2 秒查询，指标曲线每 30 秒刷新；实际状态与时间均来自后端，没有 45 秒自动完成规则。
 
 ## 启动
 
@@ -207,7 +207,7 @@ KV 从实际打流开始观测，PromQL 用 `timestamp` 排除回放前 gauge �
 3. Benchmark 当前主要返回 `target.metrics_labels.model_name`。同模型多部署时，需在现有公共任务响应（`app/benchmark/api.py` 组装目标标签的位置）补充真实 deployment/namespace/job 等标签，并在创建/状态/活动响应保持一致；这些标签须存在于全部相关指标。本项目只记录要求，未修改 Benchmark 文件。
 4. 在采集端或 Prometheus 去除 HA 副本、重复 scrape target、proxy/worker 重复计数，或用缓存 labels 筛选唯一采集路径；前端不猜测去重。命中两项对筛选后的序列求和。严格只统计本次回放需专用部署或任务级指标，当前数据可能包含其他业务流量，不添加不存在的 replay_id 标签。
 
-验证使用模拟 HTTP，未向真实部署发流；实际指标名和标签仍需与部署一致。`node scripts/replay-cache-check.cjs` 默认验证 token 计数下的全部三项、刷新恢复、暂停/取消、终态固定历史查询，以及页面内 token/blocks/unknown 单位切换。显式以 unknown 单位构建后，以 `CHECK_CACHE_TOKENS=0` 运行同脚本可验证单位未确认时的空态。
+验证使用模拟 HTTP，未向真实部署发流；实际指标名和标签仍需与部署一致。`node scripts/replay-cache-check.cjs` 默认验证 token 计数下的全部三项、刷新恢复、paused 状态显示与取消、终态固定历史查询，以及页面内 token/blocks/unknown 单位切换。显式以 unknown 单位构建后，以 `CHECK_CACHE_TOKENS=0` 运行同脚本可验证单位未确认时的空态。
 
 本次 `npm test` 51 项通过，构建/浏览器检查均通过；原有延迟及暂停按钮浏览器回归通过。另验证了自定义指标前缀、30 秒去重、blocks/requests 单位禁用 token/s、单项错误隔离、空结果清除、相对时间 tooltip、中英文及 320px 布局。新区域与回放延迟使用各自的 React key，避免切换模式/任务时重复挂载；图表不随约 2 秒一次的进度轮询重绘。
 
@@ -281,7 +281,7 @@ VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 | `view=status` 未提供轻量响应 | 活动/状态接口忽略该参数，隔离验证中两者均返回注入的全部 1,000 条 `results`；约每 2 秒的轮询会反复下载结果文本，任务越大响应越重。 | 移植兼容补丁中的轻量响应能力，使 `?view=status` 省略 `results`，保留原完整查询接口。 |
 | 后端实际指标标签映射未实现 | 公共响应直接用目标模型名作为 `model_name`；隔离验证配置 `BENCHMARK_MODEL_METRICS_MAP={"alias":"real-model"}` 后仍返回 alias。LiteLLM 别名与指标名不同时，未配置映射的曲线查询可能为空。 | 当前可配置前端一对一 `VITE_MODEL_METRICS_MAP`；或移植后端映射能力，由任务返回实际指标标签。 |
 | 取消与调度提交存在竞态 | `app/benchmark/core.py` 在取消检查和线程池提交之间未使用同一把锁；在该间隙插入真实 HTTP 取消后，接口已返回 202/cancelling，调度线程仍提交了一个请求。状态更新也缺少取消中/终态保护。 | 移植兼容补丁中的原子提交与状态保护，使取消受理与提交共用锁；已提交的请求仍等待处理结束。 |
-| 没有暂停/继续接口 | 隔离验证中 `/pause`、`/resume` 均返回 404，任务没有暂停能力字段。前端按钮按能力禁用。 | 参考 [暂停补丁](integration/benchmark-pause.patch) 移植接口与调度能力，不能直接套用旧补丁。 |
+| 没有暂停/继续接口 | 隔离验证中 `/pause`、`/resume` 均返回 404，任务没有暂停能力字段。前端已移除暂停/继续按钮，不再调用这两条接口。 | 参考 [暂停补丁](integration/benchmark-pause.patch) 移植接口与调度能力，不能直接套用旧补丁。 |
 | burst 未及时进入 draining | `run_replay` 的突发循环等待所有在途请求结束后才退出；隔离验证中 total=2、sent=2、completed=0 时仍返回 running，`dispatch_finished` 尚未置位。前端会继续显示“回放中”，通常观察不到独立的等待响应阶段。 | 最后一个请求提交后即设置 draining/dispatch_finished，再等待在途响应；终态仍以全部处理结束为准。 |
 
 当前 Benchmark 已精确识别 `speed: "burst"`，内部使用突发调度并在公共任务响应中继续返回 `"burst"`。突发模式取消历史请求间隔，按 `BENCHMARK_MAX_WORKERS` 并发上限持续提交请求；它不会绕过线程池或上游容量限制。
@@ -312,7 +312,7 @@ TypeScript 与生产构建通过；37 项解析、接口配置、缓存、模型
 
 
 
-## 倍速、暂停、取消与刷新恢复
+## 倍速、取消与刷新恢复
 
 创建前选择 0.5× / 1× / 2× / 5× / 10× / `∞`，默认 1×。数字倍速缩放请求发送间隔；选择 `∞` 时前端仍只发送原有四个字段，其中 `speed` 为字符串 `"burst"`，后端忽略历史请求间隔并尽快提交所选区间的全部请求。线程池并发仍受后端上限约束，因此 `∞` 表示取消历史节奏。创建后的任务参数固定，不能运行中改速。状态原样返回 `speed`；旧后端未知倍速显示“倍速未知”，不默认显示原速。
 
@@ -355,11 +355,11 @@ sum by (model_name) (vllm:num_requests_waiting{model_name="实际指标模型名
 
 取消按钮仅在 `cancellable=true` 启用。`202` 进入 cancelling 后继续更新；`409 + task` 更新实际终态。旧轮询响应不能撤销取消或降低计数。已经提交给工作线程的请求仍可完成，进度不强制填满。
 
-## 暂停/继续与取消流程（2026-10-14）
+## 暂停/继续契约与取消流程（2026-10-14）
 
-此次只修改 llm-dashboard，未修改 `D:\ai_workspace\Benchmark`，也未自动部署后端补丁。前端已新增“暂停回放 / 继续回放”按钮，并支持 `paused` 状态、刷新恢复和暂停任务取消。**当前未修改的 Benchmark 没有暂停能力，按钮禁用并提示更新后端；后端实现下面的契约后才可暂停真实打流。** 演示模式可直接体验按钮，但不发送真实流量。
+前端曾提供“暂停回放 / 继续回放”按钮，**已于 2026-10-16 移除**：前端不再发起 pause/resume 请求，回放进行中只有“取消回放”入口。仍保留对 `paused` 状态的识别——若后端已实现下述契约（或经 API 手动暂停），页面会如实显示“已暂停”、继续观测进度与曲线，并可取消；恢复打流需通过后端 API 调用 resume。以下契约、字段与补丁说明保留，供后端实现和手动调用参考。
 
-暂停是停止提交新的回放请求；线程池中已经提交的请求（包括排队等待线程执行的请求）继续执行。因此点击暂停后，已有请求仍可能开始执行或完成，“已完成 / 总请求”和实例曲线仍可能变化。前端持续约 2 秒查询进度、30 秒查询曲线；这与后台调度是否暂停相互独立。
+暂停是停止提交新的回放请求；线程池中已经提交的请求（包括排队等待线程执行的请求）继续执行。因此暂停后，已有请求仍可能开始执行或完成，“已完成 / 总请求”和实例曲线仍可能变化。前端持续约 2 秒查询进度、30 秒查询曲线；这与后台调度是否暂停相互独立。
 
 | 操作 | 前端请求 | 后端响应与行为 |
 | --- | --- | --- |
@@ -382,7 +382,7 @@ sum by (model_name) (vllm:num_requests_waiting{model_name="实际指标模型名
 }
 ```
 
-`paused_at` 是当前暂停起点的 Unix 秒时间戳，继续时为 null；`paused_seconds` 是已结束的暂停累计秒数，不含当前尚未结束的暂停。`pausable` 仅在 queued/running 且仍有未提交请求时为 true；`resumable` 仅在 paused 为 true。preparing 尚在准备请求、draining 已全部提交、cancelling 和终态不支持暂停。暂停仍属于活动任务，会阻止新建回放；刷新后从 active 恢复为“已暂停”，需用户点击继续。manual 认证仍需刷新后重新填写密钥，proxy 模式自动认证；后端进程重启不支持继续暂停任务，会标记 failed。
+`paused_at` 是当前暂停起点的 Unix 秒时间戳，继续时为 null；`paused_seconds` 是已结束的暂停累计秒数，不含当前尚未结束的暂停。`pausable` 仅在 queued/running 且仍有未提交请求时为 true；`resumable` 仅在 paused 为 true。preparing 尚在准备请求、draining 已全部提交、cancelling 和终态不支持暂停。暂停仍属于活动任务，会阻止新建回放；刷新后从 active 恢复为“已暂停”，需通过 API 继续恢复打流。manual 认证仍需刷新后重新填写密钥，proxy 模式自动认证；后端进程重启不支持继续暂停任务，会标记 failed。
 
 前端可通过 `.env.local` 自定义这两条路径；Vite 的后端分流与代理认证也覆盖它们。修改后重新启动前端，生产部署需要重新构建；默认同源反向代理的 `/api/replays` 前缀已经包含它们。
 
@@ -406,12 +406,12 @@ VITE_REPLAY_RESUME_PATH=/api/replays/{id}/resume
 
 点击“取消回放”的完整流程：
 
-1. 前端发送 `POST /api/replays/{replay_id}/cancel` 和回放认证头，期间禁用暂停/继续及重复取消；请求失败时显示错误，不能据此认为后端已停止。
+1. 前端发送 `POST /api/replays/{replay_id}/cancel` 和回放认证头，期间禁用重复取消；请求失败时显示错误，不能据此认为后端已停止。
 2. Benchmark 设置取消事件，返回 `202` 和 `status=cancelling`；修复竞态后，受理取消与提交共用锁，受理后不再向线程池提交新请求。这是在取消后端打流任务，曲线查询继续进行。
 3. 已提交的请求继续执行，后端等待其结束或超时；前端继续读取最新计数，所以可能暂时显示“正在取消”。暂停中的任务也必须唤醒，才能完成取消收尾。
 4. 后端返回 `status=cancelled`、`finished_at`；前端停止任务状态轮询，保留实际进度和已有曲线，不强制到 100%。曲线仍按原规则补查尾部指标。重复取消 cancelling 返回 202；任务已经结束返回 `409 + task`，前端展示实际终态。
 
-验证：`npm test`、`npm run build`、`node scripts/proxy-check.cjs`。启动 4173 预览服务后运行 `node scripts/replay-pause-check.cjs`，覆盖操作请求、旧轮询隔离、暂停期间进度/曲线、刷新、失败/冲突、取消、中英文及 320px 布局。后端补丁验证命令 `python scripts/benchmark-pause-check.py <已应用两份补丁的Benchmark目录>` 使用临时状态库、真实本地 HTTP 接口和模拟工作线程，不发送真实推理请求。
+验证：`npm test`、`npm run build`、`node scripts/proxy-check.cjs`。启动 4173 预览服务后运行 `node scripts/replay-latency-check.cjs` 与 `node scripts/replay-cache-check.cjs`，其中以后端直接返回 `paused` 状态验证“已暂停”显示与暂停期间持续观测；`replay-pause-check.cjs` 已随按钮移除删除。后端补丁验证命令 `python scripts/benchmark-pause-check.py <已应用两份补丁的Benchmark目录>` 使用临时状态库、真实本地 HTTP 接口和模拟工作线程，不发送真实推理请求。
 
 浏览器仅持久化任务 ID、非敏感任务快照、历史窗口和显示偏好；待确认创建参数与幂等键存入 sessionStorage，刷新后通过“重试原创建请求”复用原请求，不生成新键。认证值不写入浏览器存储。`VITE_REPLAY_STORAGE_SCOPE` 用于隔离同一前端地址下的不同回放环境。
 

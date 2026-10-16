@@ -57,11 +57,8 @@ const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
         if(req.method()==='POST'){
           posts.push(url.pathname);
           const action=url.pathname.split('/').at(-1);
-          assert(['pause','resume','cancel'].includes(action),'restoring must never create a replay');
-          task={...task,revision:task.revision+1};
-          if(action==='pause')task={...task,status:'paused',pausable:false,resumable:true};
-          if(action==='resume')task={...task,status:'running',pausable:true,resumable:false};
-          if(action==='cancel'){task={...task,status:'cancelling',cancellable:false,pausable:false,resumable:false};status=202;}
+          assert.equal(action,'cancel','restoring must never create or control a replay');
+          task={...task,status:'cancelling',cancellable:false,pausable:false,resumable:false,revision:task.revision+1};status=202;
           body=task;
         }else if(url.pathname==='/api/replays/active'){
           const active=!['cancelled','succeeded','failed'].includes(task.status);body={active,task:active?task:null};
@@ -108,15 +105,18 @@ const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
     await expect(section.locator('[data-cache-chart="kv"] .cache-legend>span')).toHaveCount(2);
     if(tokens){await expect(hitRate.locator('.metric-value')).toContainText('—');await expect(hitTokens.locator('.metric-value')).toContainText('1,280');}
     failKV=false;emptyRate=false;
-    await page.getByRole('button',{name:'暂停回放',exact:true}).click();
+    // 后端侧暂停（如经 API 手动暂停）：无按钮入口时前端仍应如实显示并继续观测。
+    task={...task,status:'paused',pausable:false,resumable:true,revision:task.revision+1};
+    await page.clock.runFor(2500);
     await expect(section).toContainText('已暂停');
     const pausedQueries=queries.length;await page.clock.runFor(31000);
     await expect.poll(()=>queries.length).toBeGreaterThan(pausedQueries);await expect(kv).not.toContainText('查询失败');
     await page.reload();await auth();
     await expect(kv.locator('.metric-value')).toContainText('64');
-    assert.equal(posts.length,1);
+    assert.equal(posts.length,0,'pause/resume buttons are gone; no POST may be sent');
     assert.equal(queries.filter(q=>q.key==='kv'&&q.isRange).at(-1).start,Math.ceil(task.started_at));
-    await page.getByRole('button',{name:'继续回放',exact:true}).click();await expect(section).toContainText('回放中');
+    task={...task,status:'running',pausable:true,resumable:false,revision:task.revision+1};
+    await page.clock.runFor(2500);await expect(section).toContainText('回放中');
     await section.getByRole('checkbox',{name:'相对时间',exact:true}).check();
     await section.locator('[data-cache-chart="kv"] .cache-trend').scrollIntoViewIfNeeded();
     const bounds=await section.locator('[data-cache-chart="kv"] .cache-trend').boundingBox();
@@ -135,7 +135,7 @@ const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
     assert.equal(queries.at(-1).at,finalAt);
     const endCount=queries.length;await page.clock.runFor(65000);assert.equal(queries.length,endCount);
     await page.reload();await auth();await expect(section).toContainText('最终观测已固定');
-    assert.equal(queries.at(-1).at,finalAt);assert.equal(posts.length,3);
+    assert.equal(queries.at(-1).at,finalAt);assert.equal(posts.length,1);
     missingKV=true;await page.clock.runFor(31000);await page.getByRole('button',{name:'刷新指标',exact:true}).click();
     await expect(kv.locator('.metric-value')).toContainText('—');
     await expect(section.locator('[data-cache-chart="kv"] .cache-legend>span')).toHaveCount(0);
@@ -177,6 +177,6 @@ const tokens=process.env.CHECK_CACHE_TOKENS!=='0';
     await expect(kv.locator('.metric-value')).toContainText('64');
     assert(queries.length>beforeNew,'first cache request should run at the next whole second');
     assert.deepEqual(errors,[]);
-    console.log(`PASS: cache ${tokens?'token counters':'unconfirmed units'}, instance maximum/curves, target isolation, failures, empty results, pause/resume/cancel, reload, final historical time, relative tooltip, English and 320px layout.`);
+    console.log(`PASS: cache ${tokens?'token counters':'unconfirmed units'}, instance maximum/curves, target isolation, failures, empty results, paused-state display and observation, reload, final historical time, relative tooltip, English and 320px layout.`);
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});
