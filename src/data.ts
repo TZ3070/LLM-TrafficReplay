@@ -166,7 +166,7 @@ export function metricQueries(modelName: string, windowSeconds: number, config: 
 export const MODEL_DISCOVERY_QUERY = 'count by (model_name) (vllm:num_requests_running)';
 /**
  * Prometheus 的 vLLM gauge 标签 → 当前已采集的模型列表。空闲模型也有值为 0 的 gauge。
- * 不从 LiteLLM 推断指标名。回放后端若使用逻辑别名，反向读取显式映射来确定 model_id。
+ * 不从 LiteLLM 推断指标名。历史档案若使用逻辑别名，反向读取显式映射来确定 source_model。
  */
 export function parseModelVector(raw: unknown, metricsMap: Record<string, string> = {}): Model[] {
   const names = [...new Set(promResult(raw, 'vector').map(series => series.metric.model_name).filter((name): name is string => typeof name === 'string' && !!name.trim()))].sort();
@@ -212,7 +212,7 @@ export function adaptModels(raw: unknown, metricsMap: Record<string, string> = {
   }
   return [...grouped.values()];
 }
-export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay'; timeoutMs?: number }
+export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay' | 'targets'; timeoutMs?: number }
 export class ApiError extends Error {
   constructor(message: string, public status: number, public payload?: any, public retryAfterMs?: number) { super(message); }
 }
@@ -231,6 +231,17 @@ export function request(path: string, options: RequestInit = {}, auth?: ClientOp
   const until=rateLimitUntil.get(auth?.service || 'metrics') || 0;
   if(Date.now() < until) return Promise.reject(new ApiError('请求限流，正在等待后恢复', 429,undefined,until-Date.now()));
   return performRequest(path,options,auth);
+}
+export function parseTargetModels(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray((raw as { target_models?: unknown }).target_models)) {
+    throw new Error('Benchmark 模型列表响应缺少 target_models 数组');
+  }
+  const values=(raw as { target_models: unknown[] }).target_models;
+  if(values.some(value=>typeof value!=='string'||!value.trim()))throw new Error('Benchmark target_models 必须只包含非空字符串');
+  return [...new Set(values as string[])];
+}
+export async function fetchTargetModels(path = '/api/models'): Promise<string[]> {
+  return parseTargetModels(await request(path, {}, { service: 'targets' }));
 }
 // 由指标入口显式使用缓存，改路由前缀后仍保持 30s 去重，不依赖某一种拼写。
 export function requestPrometheus(path: string, options: { timeoutMs?: number; freshAfter?: number } = {}): Promise<any> {

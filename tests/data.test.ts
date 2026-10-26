@@ -1,6 +1,13 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { formatValue, normalizeRange, parseMatrix, parsePromValue, parseVector, parseLatencyVector, queryTiming, loadQueries } from '../src/data';
+import { formatValue, normalizeRange, parseMatrix, parsePromValue, parseTargetModels, parseVector, parseLatencyVector, queryTiming, loadQueries } from '../src/data';
+
+test('target model parsing validates the Benchmark response and removes duplicate IDs',()=>{
+  assert.deepEqual(parseTargetModels({source_models:['source'],target_models:['target-a','target-b','target-a']}),['target-a','target-b']);
+  assert.deepEqual(parseTargetModels({target_models:[]}),[]);
+  assert.throws(()=>parseTargetModels({source_models:[]}),/target_models/);
+  assert.throws(()=>parseTargetModels({target_models:['target',' ']}),/非空字符串/);
+});
 
 test('preserves Prometheus NaN and infinity values', () => {
   assert(Number.isNaN(parsePromValue('NaN')));

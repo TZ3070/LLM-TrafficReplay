@@ -24,6 +24,16 @@ test('restoration uses the task context and corrects legacy metric aliases witho
   assert.throws(()=>applyReplayResponse({...task,replay_id:'different'},restored),/ID 不匹配/);
 });
 
+test('separate source and target models restore independently and target labels drive observation',()=>{
+  const separated=restoreReplay({...task,model_id:undefined,source_model:'archive-model',target_model:'optimized-model',target:{metrics_labels:{model_name:'optimized-v2',deployment:'optimized'}}},{'optimized-model':'optimized-v2'});
+  assert.equal(separated.sourceModelId,'archive-model');
+  assert.equal(separated.sourceModelName,'archive-model');
+  assert.equal(separated.modelId,'optimized-model');
+  assert.equal(separated.modelName,'optimized-model');
+  assert.equal(separated.metricsName,'optimized-v2');
+  assert.deepEqual(separated.metricsLabels,{model_name:'optimized-v2',deployment:'optimized'});
+});
+
 test('older revisions and late polls cannot undo cancellation, reduce counts or reopen terminal tasks',()=>{
   const running=restoreReplay(task);
   const cancelling=applyReplayResponse({...task,status:'cancelling',revision:3,cancel_requested_at:310},running);
@@ -40,9 +50,11 @@ test('refresh storage keeps non-secret context and the original pending idempote
   const priorLocal=globalThis.localStorage,priorSession=globalThis.sessionStorage;
   globalThis.localStorage=memory();globalThis.sessionStorage=memory();
   try{
-    const replay=restoreReplay(task);
+    const replay={...restoreReplay(task),sourceMetricsName:'source-vllm',sourceModelName:'Source display'};
     saveSnapshot('test',{replay:{...replay,apiKey:'must-not-persist'} as any});
     assert.equal(readSnapshot('test').replay?.speed,5);assert.equal(readSnapshot('other').replay,undefined);
+    assert.equal(readSnapshot('test').replay?.sourceMetricsName,'source-vllm');
+    assert.equal(readSnapshot('test').replay?.sourceModelName,'Source display');
     assert(!JSON.stringify(readSnapshot('test')).includes('must-not-persist'));
     saveSnapshot('burst',{replay:{...replay,speed:'burst'}});
     assert.equal(readSnapshot('burst').replay?.speed,'burst');
@@ -54,10 +66,14 @@ test('refresh storage keeps non-secret context and the original pending idempote
     assert.equal(readSnapshot('test').replay?.resumable,true);
     assert.equal(readSnapshot('test').replay?.pausedAt,310);
     assert.equal(readSnapshot('test').replay?.pausedSeconds,12);
-    const body={model_id:'alias',start_time:100,end_time:200,speed:5};
+    const body={source_model:'source-alias',target_model:'target-alias',start_time:100,end_time:200,speed:5};
     savePending('test',{key:'original-key',body,signature:JSON.stringify(body),context:{...replay,id:''}});
     assert.equal(readPending('test')?.key,'original-key');
+    assert.deepEqual(readPending('test')?.body,body);
     assert.equal(readPending('test')?.body.speed,5);assert.equal(readPending('other'),undefined);
+    const legacyBody={model_id:'legacy-alias',start_time:100,end_time:200,speed:5};
+    savePending('legacy',{key:'legacy-key',body:legacyBody,signature:JSON.stringify(legacyBody),context:{...replay,id:''}});
+    assert.deepEqual(readPending('legacy')?.body,legacyBody,'legacy unconfirmed requests retain their exact body and idempotency key');
     const burstBody={model_id:'alias',start_time:100,end_time:200,speed:'burst' as const};
     savePending('burst',{key:'burst-key',body:burstBody,signature:JSON.stringify(burstBody),context:{...replay,id:''}});
     assert.equal(readPending('burst')?.body.speed,'burst');

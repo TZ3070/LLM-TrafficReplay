@@ -83,6 +83,8 @@ Prometheus 查询不携带这些认证头。`Idempotency-Key` 只随创建 POST 
 
 ## 3. 创建回放任务
 
+来源沿用 Prometheus 模型下拉框（配置唯一别名时提交档案别名）；目标通过“选择打流目标”按钮从 Benchmark `GET /api/models` 返回的 `target_models: string[]` 中选择。该列表路由与回放接口使用同一 Benchmark 地址；当前列表接口不要求 Benchmark 认证。无有效目标时前端禁止创建。
+
 ### 3.1 请求
 
 ```http
@@ -91,7 +93,8 @@ POST /api/replays
 
 ```json
 {
-  "model_id": "DeepSeek-R1",
+  "source_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1-optimized",
   "start_time": 1791770400,
   "end_time": 1791771000,
   "speed": 1
@@ -100,18 +103,20 @@ POST /api/replays
 
 | 字段 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
-| `model_id` | string | 是 | 所选逻辑模型；默认就是下拉框中的 Prometheus `model_name`，配置映射时为回放别名 |
+| `source_model` | string | 是 | 历史来源；当前下拉框的模型名，配置唯一映射时为档案别名 |
+| `target_model` | string | 是 | Benchmark `target_models` 中选择的 LiteLLM 打流目标 |
 | `start_time` | number | 是 | 历史区间开始，Unix 整数秒 |
 | `end_time` | number | 是 | 历史区间结束，Unix 整数秒，必须大于开始 |
 | `speed` | number \| `"burst"` | 前端始终发送 | 有限正数，或精确字符串 `"burst"`；控件显示 0.5、1、2、5、10、`∞`，默认 1 |
 
-当前前端发送这四个字段，不发送目标 IP、部署实例或完整请求内容。界面 `∞` 只是 `"burst"` 的显示形式，不增加布尔字段；其他选项继续发送 JSON number。数字倍速只缩放发送间隔，不修改推理耗时，1× 表示原速；`"burst"` 不再等待历史间隔，在空闲并发槽位出现时继续发送后续请求，提交速度和实际并发仍受后端线程池、队列与上游容量限制。后端必须将逻辑模型解析为优化后的目标路由，并在任务创建时保存目标快照，避免任务运行期间配置变化导致打流目标漂移。
+当前前端发送这五个字段，不发送目标 IP、部署实例或完整请求内容。来源与目标可以相同，也可以不同。界面 `∞` 只是 `"burst"` 的显示形式，不增加布尔字段；其他选项继续发送 JSON number。数字倍速只缩放发送间隔，不修改推理耗时，1× 表示原速；`"burst"` 不再等待历史间隔，在空闲并发槽位出现时继续发送后续请求，提交速度和实际并发仍受后端线程池、队列与上游容量限制。后端按来源检索历史记录，并保存固定的目标和来源上下文。
 
 突发模式请求示例：
 
 ```json
 {
-  "model_id": "DeepSeek-R1",
+  "source_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1-optimized",
   "start_time": 1791770400,
   "end_time": 1791771000,
   "speed": "burst"
@@ -125,9 +130,9 @@ POST /api/replays
 ```json
 {
   "replay_id": "replay-20261012-0001",
-  "model_id": "DeepSeek-R1",
+  "model_id": "DeepSeek-R1-optimized",
   "source_model": "DeepSeek-R1",
-  "target_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1-optimized",
   "start_time": 1791770400,
   "end_time": 1791771000,
   "speed": 1,
@@ -187,9 +192,9 @@ GET /api/replays/replay-20261012-0001
 ```json
 {
   "replay_id": "replay-20261012-0001",
-  "model_id": "DeepSeek-R1",
+  "model_id": "DeepSeek-R1-optimized",
   "source_model": "DeepSeek-R1",
-  "target_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1-optimized",
   "start_time": 1791770400,
   "end_time": 1791771000,
   "speed": 1,
@@ -214,9 +219,9 @@ GET /api/replays/replay-20261012-0001
 ```json
 {
   "replay_id": "replay-20261012-0001",
-  "model_id": "DeepSeek-R1",
+  "model_id": "DeepSeek-R1-optimized",
   "source_model": "DeepSeek-R1",
-  "target_model": "DeepSeek-R1",
+  "target_model": "DeepSeek-R1-optimized",
   "start_time": 1791770400,
   "end_time": 1791771000,
   "speed": 1,
@@ -292,13 +297,13 @@ Benchmark 典型过程为 `preparing → queued → running → draining → suc
 count by (model_name) (vllm:num_requests_running)
 ```
 
-默认 `model_id` 等于发现的 `model_name`。若 LiteLLM/档案使用逻辑别名，可在 `.env.local` 配置：
+默认 `source_model` 等于发现的 `model_name`。若档案使用逻辑别名，可在 `.env.local` 配置：
 
 ```dotenv
 VITE_MODEL_METRICS_MAP='{"deepseek-service":"DeepSeek-R1"}'
 ```
 
-下拉框和历史指标使用 `DeepSeek-R1`；创建请求提交 `model_id: "deepseek-service"`。后端将该别名同时关联到历史档案和当前优化部署。
+下拉框和历史指标使用 `DeepSeek-R1`；创建请求提交 `source_model: "deepseek-service"`。`target_model` 独立从目标列表选择；同一配置也可按目标别名查询实际 Prometheus 标签。
 
 若优化后的 Prometheus 模型名变为 `DeepSeek-R1-v2`，后端可以返回：
 
@@ -448,7 +453,7 @@ VITE_MODEL_METRICS_MAP='{}'
 联调顺序：
 
 1. 在页面切换“后端”，确认模型、历史曲线正常。
-2. 选取有请求档案的历史区间，确认创建 POST 包含 model_id/start_time/end_time/speed 四字段；数字选项为 JSON number，`∞` 为字符串 `"burst"`。响应为直接 JSON 且包含 `replay_id`。
+2. 选取有请求档案的历史区间并选择打流目标，确认创建 POST 包含 source_model/target_model/start_time/end_time/speed 五字段；数字选项为 JSON number，`∞` 为字符串 `"burst"`。响应为直接 JSON 且包含 `replay_id`。
 3. 验证状态从排队/准备进入运行，首个真实请求发送后才出现 `started_at`；核对模型确实为当前优化部署。
 4. 检查右侧两个 `query_range` 请求的起点为实际打流时间，而非历史 `start_time`，且目标标签能返回数据。
 5. 验证全部发出后不会提前完成；在途请求结束后才返回终态与 `finished_at`。

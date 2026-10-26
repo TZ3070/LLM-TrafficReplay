@@ -4,8 +4,8 @@ export interface Model {
   name: string; // 页面展示实际指标中的模型名称。
   provider?: string;
   metricsName?: string; // vLLM 指标的 model_name；未提供时回退 name。
-  replayModelId?: string; // 可选显式逻辑别名；未配置时向回放后端提交 id。
-  replayError?: string; // 多个别名对应同一指标模型时阻止自动选择回放目标。
+  replayModelId?: string; // 历史来源在档案中的显式逻辑别名；未配置时提交 id。
+  replayError?: string; // 多个别名对应同一指标模型时无法确定历史来源。
 }
 // 状态和接口均使用 Unix 秒；作为回放请求时采用 [start, end)。
 export interface TimeRange { start: number; end: number }
@@ -23,10 +23,12 @@ export type ReplaySpeed = number | 'burst';
 /** 创建响应与状态接口映射到此类型；与当前下拉框状态独立。 */
 export interface Replay {
   id: string; // 后端 replay_id，供 GET /api/replays/{id} 轮询。
-  modelId: string; // 创建任务时固定的逻辑模型，不随用户切换下拉框变化。
-  sourceModelId?: string;
-  modelName: string;
-  metricsName: string;
+  modelId: string; // 目标逻辑模型；保留属性名以兼容现有目标指标组件。
+  sourceModelId?: string; // 创建任务时固定的历史来源模型。
+  sourceModelName?: string;
+  sourceMetricsName?: string; // 原始历史模型标签，独立于目标部署标签。
+  modelName: string; // 目标模型显示名。
+  metricsName: string; // 目标部署在 Prometheus 中的 model_name。
   source: TimeRange; // 创建任务时复制的历史选区，用于查询原始请求档案。
   status: 'queued' | 'preparing' | 'running' | 'paused' | 'draining' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
   speed?: ReplaySpeed;

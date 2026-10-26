@@ -31,6 +31,7 @@ const http = require('node:http');
     for(const [path,backend] of [
       ['/api/prometheus/query?query=up','metrics'],
       ['/api/prometheus/query_range?start=100&end=200','metrics'],
+      ['/api/models','replay'],
       ['/api/custom.create','replay'],
       ['/api/custom.status/task-1','replay'],
       ['/api/custom.active','replay'],
@@ -46,11 +47,12 @@ const http = require('node:http');
       assert.equal(result.authorization,backend==='replay'?'Bearer test-benchmark-key':null);
     }
     const defaults=Object.entries(createBackendProxy(env));
+    assert(defaults.some(([key,value])=>new RegExp(key).test('/api/models')&&value.target===env.REPLAY_BACKEND_URL));
     assert(defaults.some(([key,value])=>key.startsWith('^')&&new RegExp(key).test('/api/replays/task-1')&&value.target===env.REPLAY_BACKEND_URL));
     assert(!defaults.some(([key])=>key.startsWith('^')&&new RegExp(key).test('/api/replays-other')));
     assert.throws(()=>createBackendProxy({...env,VITE_REPLAY_AUTH_MODE:'proxy'}),/BENCHMARK_API_KEY/);
     const injected=createBackendProxy({...env,VITE_REPLAY_AUTH_MODE:'proxy',BENCHMARK_API_KEY:'test-server-only'});
-    for(const [path,expected] of [['/api/replays/active','Bearer test-server-only'],['/api/replays/task-1/cancel','Bearer test-server-only'],['/api/replays/task-1/pause','Bearer test-server-only'],['/api/replays/task-1/resume','Bearer test-server-only'],['/api/prometheus/query',undefined]]) {
+    for(const [path,expected] of [['/api/models',undefined],['/api/replays/active','Bearer test-server-only'],['/api/replays/task-1/cancel','Bearer test-server-only'],['/api/replays/task-1/pause','Bearer test-server-only'],['/api/replays/task-1/resume','Bearer test-server-only'],['/api/prometheus/query',undefined]]) {
       const [,options]=Object.entries(injected).find(([key])=>key.startsWith('^')?new RegExp(key).test(path):path.startsWith(key));
       assert.equal(options.headers?.Authorization,expected);
     }
@@ -58,7 +60,7 @@ const http = require('node:http');
     vite=await createServer({configFile:false,server:{host:'127.0.0.1',port:0,proxy:injected},optimizeDeps:{noDiscovery:true,include:[]}});
     await vite.listen();
     const injectedOrigin=`http://127.0.0.1:${vite.httpServer.address().port}`;
-    for(const [path,expected] of [['/api/replays/active','Bearer test-server-only'],['/api/replays/task-1/cancel','Bearer test-server-only'],['/api/replays/task-1/pause','Bearer test-server-only'],['/api/replays/task-1/resume','Bearer test-server-only'],['/api/prometheus/query',null]]) {
+    for(const [path,expected] of [['/api/models',null],['/api/replays/active','Bearer test-server-only'],['/api/replays/task-1/cancel','Bearer test-server-only'],['/api/replays/task-1/pause','Bearer test-server-only'],['/api/replays/task-1/resume','Bearer test-server-only'],['/api/prometheus/query',null]]) {
       const body=await (await fetch(injectedOrigin+path)).json();
       assert.equal(body.authorization,expected);
     }

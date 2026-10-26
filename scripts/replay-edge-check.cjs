@@ -32,6 +32,8 @@ const fullTask=(alias='edge-model')=>({replay_id:'edge-task',status:'running',mo
           const values=running?['2','8']:[state.waitingValue,state.waitingValue];
           body={status:'success',data:{resultType:'matrix',result:state.curvePolicy==='empty'?[]:[{metric:{model_name:'edge-model'},values:samples.map((time,i)=>[time,values[i]])}]}};
         }
+      }else if(url.pathname==='/api/models'){
+        body={target_models:['edge-model']};
       }else{
         assert.equal(req.headers().authorization,proxy?undefined:'Bearer edge-test-only');
         if(url.pathname==='/api/replays/active')body={active:!!state.task&&!['succeeded','cancelled'].includes(state.task.status),task:state.task&&!['succeeded','cancelled'].includes(state.task.status)?state.task:null};
@@ -39,7 +41,7 @@ const fullTask=(alias='edge-model')=>({replay_id:'edge-task',status:'running',mo
           const input=req.postDataJSON(),key=req.headers()['idempotency-key'];state.creates.push({body:input,key});
           if(state.createPolicy==='rejected'){status=400;body={error:'Selected model is invalid'};}
           else if(state.createPolicy==='unknown'){status=503;body={error:'Creation outcome unknown'};}
-          else{status=202;state.task={...fullTask(input.model_id),...input};body=state.task;}
+          else{status=202;state.task={...fullTask(input.target_model),...input};body=state.task;}
         }else body=state.task;
       }
       await route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)}).catch(()=>{});
@@ -62,6 +64,10 @@ const fullTask=(alias='edge-model')=>({replay_id:'edge-task',status:'running',mo
     const inputs=page.locator('.selection-form input');
     await inputs.first().fill(await inputs.first().getAttribute('min'));
     await inputs.last().fill(await inputs.last().getAttribute('max'));
+    if(await page.locator('.target-choice button').isEnabled()){
+      await page.locator('.target-choice button').click();
+      await page.locator('.target-option').first().click();
+    }
   };
   const begin=async page=>{
     await expect(page.getByRole('button',{name:'确认回放',exact:true})).toBeEnabled();
@@ -110,7 +116,7 @@ const fullTask=(alias='edge-model')=>({replay_id:'edge-task',status:'running',mo
     await alias.page.getByRole('button',{name:'刷新模型列表',exact:true}).click();
     await expect(alias.page.getByRole('button',{name:'刷新模型列表',exact:true})).toBeEnabled();
     await alias.page.getByRole('button',{name:'连接设置',exact:true}).click();
-    await expect(alias.page.locator('.endpoint-list')).toContainText('回放 model_id = edge-alias');
+    await expect(alias.page.locator('.endpoint-list')).toContainText('source_model = edge-alias');
     await alias.page.getByRole('button',{name:'关闭',exact:true}).click();
     // A different source must not use the target deployment's metric name.
     const separate=await fixture({...fullTask('target-alias'),source_model:'source-model'});await enter(separate.page);

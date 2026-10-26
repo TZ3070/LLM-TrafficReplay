@@ -24,6 +24,9 @@ const proxy=process.env.CHECK_PROXY==='1';
           state.curves.push({start,end});
           body={status:'success',data:{resultType:'matrix',result:[{metric:{model_name:'lifecycle-model'},values:[[start,'2'],[end,'3']]}]}};
         }
+      }else if(url.pathname==='/api/models'){
+        assert.equal(req.headers().authorization,undefined);
+        body={source_models:['lifecycle-model'],target_models:['lifecycle-model','optimized-target']};
       }else{
         assert.equal(req.headers().authorization,proxy?undefined:'Bearer lifecycle-test');
         if(url.pathname==='/api/replays/active'){
@@ -73,6 +76,8 @@ const proxy=process.env.CHECK_PROXY==='1';
     await inputs.first().fill((await inputs.first().getAttribute('min')).replace(/:00$/,''));
     await inputs.last().fill((await inputs.last().getAttribute('max')).replace(/:00$/,''));
     await page.locator('#replay-speed').selectOption(speed);
+    await page.getByRole('button',{name:'选择打流目标',exact:true}).click();
+    await page.getByRole('button',{name:'optimized-target',exact:true}).click();
   };
   const begin=async page=>{
     await expect(page.getByRole('button',{name:'确认回放',exact:true})).toBeEnabled();
@@ -83,7 +88,8 @@ const proxy=process.env.CHECK_PROXY==='1';
     const {page,state}=await fixture();await enter(page);await select(page);await begin(page);
     await expect(page.locator('.replay-actions code')).toHaveText('created-1');
     assert.equal(state.creates[0].input.speed,5);
-    assert.deepEqual(Object.keys(state.creates[0].input).sort(),['end_time','model_id','speed','start_time']);
+    assert.deepEqual(Object.keys(state.creates[0].input).sort(),['end_time','source_model','speed','start_time','target_model']);
+    assert.equal(state.creates[0].input.source_model,'lifecycle-model');assert.equal(state.creates[0].input.target_model,'optimized-target');
     await expect(page.locator('.task-summary')).toContainText('5×');
     await expect(page.locator('.replay-panel .load-chart')).toHaveCount(1);
     const origin=state.task.started_at;
@@ -106,7 +112,8 @@ const proxy=process.env.CHECK_PROXY==='1';
     await burst.page.getByRole('button',{name:'开始回放',exact:true}).click();
     await expect(burst.page.locator('.replay-actions code')).toHaveText('created-1');
     assert.equal(burst.state.creates[0].input.speed,'burst');
-    assert.deepEqual(Object.keys(burst.state.creates[0].input).sort(),['end_time','model_id','speed','start_time']);
+    assert.deepEqual(Object.keys(burst.state.creates[0].input).sort(),['end_time','source_model','speed','start_time','target_model']);
+    assert.equal(burst.state.creates[0].input.target_model,'optimized-target');
     await expect(burst.page.locator('.task-summary')).toContainText('∞');
     await expect(burst.page.locator('.task-summary')).not.toContainText('burst');
     await burst.page.reload();await authenticate(burst.page);

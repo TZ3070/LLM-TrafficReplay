@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Check, Languages, Layers3, LoaderCircle, Play, Radio, RefreshCw, Settings2, Terminal, Trash2, X } from 'lucide-react';
+import { Activity, Check, Languages, Layers3, LoaderCircle, Play, Radio, RefreshCw, Search, Settings2, Target, Terminal, Trash2, X } from 'lucide-react';
 import LoadChart from './LoadChart';
 import ReplayProgress from './ReplayProgress';
 import LatencyCard, { LATENCY_CARDS } from './LatencyCard';
@@ -15,7 +15,7 @@ import { readMode, readSnapshot, rememberMode, saveSnapshot } from './replayStor
 import { useReplay } from './useReplay';
 import { relativeTimeUnit } from './chartTime';
 import { DISPLAY_TIME_ZONE, clock, dateTime, fullDateTime, toInput, fromInput } from './time';
-import { demoLoad, demoModels, emptyMetrics, fetchModels, fetchLoad, fetchMetrics, formatValue, MODEL_DISCOVERY_QUERY, promDuration, queryTiming, retainFailedLoad, setMetricsAuth } from './data';
+import { demoLoad, demoModels, emptyMetrics, fetchModels, fetchTargetModels, fetchLoad, fetchMetrics, formatValue, MODEL_DISCOVERY_QUERY, promDuration, queryTiming, retainFailedLoad, setMetricsAuth } from './data';
 import type { LoadData, Metrics, Model, Replay, ReplaySpeed, TimeRange } from './types';
 import { createApiConfig } from './apiConfig';
 import { localizeMessage, readLanguage, rememberLanguage, translate, type Language } from './i18n';
@@ -62,6 +62,14 @@ export default function App() {
   const [modelsLoading,setModelsLoading]=useState(false);
   const [modelsToken,setModelsToken]=useState(0);
   const [modelId,setModelId]=useState(saved.history?.modelId || demoModels[0].id);
+  const [targetModelId,setTargetModelId]=useState(saved.history?.targetModelId || '');
+  const [targetModels,setTargetModels]=useState<string[]>([]);
+  const [targetModelsLoading,setTargetModelsLoading]=useState(false);
+  const [targetModelsError,setTargetModelsError]=useState('');
+  const [targetPickerOpen,setTargetPickerOpen]=useState(false);
+  const [targetQuery,setTargetQuery]=useState('');
+  const targetRequest=useRef(0);
+  const currentMode=useRef(mode);currentMode.current=mode;
   const modelIdRef=useRef(modelId);modelIdRef.current=modelId;
   const model=models.find(m=>m.id===modelId);
   // range 是历史查询窗口；selection 是其中准备回放的子区间，两者都使用 Unix 秒。
@@ -96,19 +104,23 @@ export default function App() {
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
   const selectionRef=useRef(selection); selectionRef.current=selection;
   const active=!!replay&&!isTerminalReplay(replay.status);
+  const targetModel=!targetModelsLoading&&!targetModelsError&&targetModels.includes(targetModelId)?targetModelId:'';
+  const targetDisplay=active?replay!.modelId:targetModelId;
+  const filteredTargets=targetModels.filter(name=>name.toLocaleLowerCase().includes(targetQuery.trim().toLocaleLowerCase()));
   const replayLabelsKey=JSON.stringify(Object.entries(replay?.metricsLabels || {}).sort(([a],[b])=>a.localeCompare(b)));
   const validSelection=!!selection&&selection.start>=range.start&&selection.end<=range.end&&selection.end>selection.start;
   const canCreate=ready && !restoring && !pending && !active && !submitting && !clearing;
   useEffect(()=>rememberMode(mode),[mode]);
   useEffect(()=>{
-    if(mode==='backend')saveSnapshot(STORAGE_SCOPE,{replay,history:{modelId,seconds,range,selection,historyEnd,relative}});
-  },[mode,replay,modelId,seconds,range,selection,historyEnd,relative]);
+    if(mode==='backend')saveSnapshot(STORAGE_SCOPE,{replay,history:{modelId,seconds,range,selection,historyEnd,relative,targetModelId}});
+  },[mode,replay,modelId,seconds,range,selection,historyEnd,relative,targetModelId]);
   const previousMode=useRef(mode);
   // 切换数据源会清空旧查询与任务；单独刷新模型列表不会清空正在观测的回放。
   useEffect(()=>{
     if(previousMode.current===mode)return;
     previousMode.current=mode;
-    setError('');setSelection(undefined);setReplayRange(undefined);setReplayData(EMPTY);setHistory(EMPTY);setMetrics(emptyMetrics);setMetricsLoading(false);setModels([]);setModelId('');setModelMode(undefined);
+    ++targetRequest.current;
+    setError('');setSelection(undefined);setReplayRange(undefined);setReplayData(EMPTY);setHistory(EMPTY);setMetrics(emptyMetrics);setMetricsLoading(false);setModels([]);setModelId('');setModelMode(undefined);setTargetModels([]);setTargetModelId('');setTargetModelsError('');setTargetModelsLoading(false);setTargetPickerOpen(false);
   },[mode]);
   // 模型入口：一次即时 query 从 vLLM gauge 的 model_name 标签生成下拉项，无需 LiteLLM 认证。
   // live 用于忽略切换数据源/卸载后到达的旧响应，不是网络请求取消器。
@@ -132,9 +144,9 @@ export default function App() {
     if(mode!=='backend'||modelMode!=='backend'||!replay||restoredId!==replay.id||historyRestored.current===replay.id)return;
     historyRestored.current=replay.id;
     const sourceId=replay.sourceModelId || replay.modelId;
-    const metricsName=sourceId===replay.modelId
+    const metricsName=replay.sourceMetricsName || API.modelMetricsMap[sourceId] || (sourceId===replay.modelId
       ? replay.metricsLabels?.model_name || replay.metricsName
-      : API.modelMetricsMap[sourceId] || sourceId;
+      : sourceId);
     const snapshot=readSnapshot(STORAGE_SCOPE).history;
     const cached=snapshot?.modelId===metricsName && snapshot.range.start<=replay.source.start && snapshot.range.end>=replay.source.end ? snapshot : undefined;
     const duration=cached?.seconds || Math.max(30,replay.source.end-replay.source.start);
@@ -210,13 +222,27 @@ export default function App() {
   },[replay?.id,replay?.startedAt,replay?.finishedAt,replay?.metricsName,replayLabelsKey,mode,refreshToken]);
   // 新模型需要重新选历史区间，但已创建的 replay 和 replayData 不清空。
   const chooseModel=(id:string)=>{setModelId(id);setSelection(undefined);setHistory(EMPTY);setMetrics(emptyMetrics);};
+  const refreshTargets=async()=>{
+    const token=++targetRequest.current;
+    setTargetModelsLoading(true);setTargetModelsError('');
+    try{
+      const list=mode==='demo'?demoModels.map(item=>item.id):await fetchTargetModels();
+      if(token!==targetRequest.current||currentMode.current!==mode)return;
+      setTargetModels(list);
+      setTargetModelId(previous=>list.includes(previous)?previous:'');
+    }catch(e){if(token===targetRequest.current&&currentMode.current===mode)setTargetModelsError((e as Error).message);}
+    finally{if(token===targetRequest.current&&currentMode.current===mode)setTargetModelsLoading(false);}
+  };
+  const openTargetPicker=()=>{setTargetQuery('');setTargetPickerOpen(true);void refreshTargets();};
   const chooseTime=(duration:number)=>{setSeconds(duration);setSelection(undefined);setMetrics(emptyMetrics);};
   // 图表刷选只更新本地状态；真正 POST 要等用户在确认框中点击“开始回放”。
   const select=useCallback((s:TimeRange | undefined)=>{selectionRef.current=s;setSelection(s);},[]);
   const beginReplay=async()=>{
-    if(!model||!selection||!validSelection||!canCreate)return;
-    const body={model_id:model.replayModelId||model.id,start_time:selection.start,end_time:selection.end,speed};
-    const context:Replay={id:'',modelId:body.model_id,sourceModelId:body.model_id,modelName:model.name,metricsName:model.metricsName||model.name,source:{...selection},status:'queued',speed};
+    if(!model||!targetModel||!selection||!validSelection||!canCreate)return;
+    const sourceModel=model.replayModelId||model.id;
+    const body={source_model:sourceModel,target_model:targetModel,start_time:selection.start,end_time:selection.end,speed};
+    const targetMetricsName=API.modelMetricsMap[targetModel]||targetModel;
+    const context:Replay={id:'',modelId:targetModel,sourceModelId:sourceModel,sourceModelName:model.name,sourceMetricsName:model.metricsName||model.name,modelName:targetModel,metricsName:targetMetricsName,source:{...selection},status:'queued',speed};
     await replayController.begin(body,context);
   };
   useEffect(()=>{if(replay&&!submitting&&!actionError)setConfirmOpen(false);},[replay?.id,submitting,actionError]);
@@ -244,7 +270,7 @@ export default function App() {
         {actionError&&<div className="error-banner" role="alert">{message(actionError)}<button aria-label={t('关闭错误')} onClick={replayController.clearActionError}><X size={15}/></button></div>}
         {pending&&<div className="recovery-banner" role="status"><span>{t('有创建请求尚未确认结果；重试会复用原参数和幂等键。')}</span><button className="button secondary" disabled={!ready||active||submitting||clearing} onClick={()=>void replayController.retryPending()}>{t('重试原创建请求')}</button></div>}
         {model?.replayError&&<div className="error-banner" role="alert">{message(model.replayError)}</div>}
-        <div className="section-title"><div><h2>{t('流量实验')}</h2><span>TRAFFIC REPLAY</span></div><span className="section-hint">{t('历史流量 → 当前模型部署')}</span></div>
+        <div className="section-title"><div><h2>{t('流量实验')}</h2><span>TRAFFIC REPLAY</span></div><span className="section-hint">{t('历史来源 → 打流目标')}</span></div>
         <div className="charts-grid">
           <section className="chart-panel">
             <div className="panel-header"><div><span className="panel-index">01</span><h3>{t('历史流量')}</h3></div><span className="badge neutral">{t(selection?'已固定':'历史查询')}</span></div>
@@ -256,15 +282,16 @@ export default function App() {
             <div className="selection-form">
               <div className="selection-title"><span><span className="selection-dot"/>{t('回放时间区间')}</span>{selection&&<button onClick={()=>setSelection(undefined)}>{t('清除选区')}</button>}</div>
               <div className="time-inputs"><label>{t('开始时间')}<input type="datetime-local" step="1" value={selection?toInput(selection.start):''} min={toInput(range.start)} max={toInput(range.end)} onChange={e=>changeInput('start',e.target.value)}/></label><span className="time-arrow">→</span><label>{t('结束时间')}<input type="datetime-local" step="1" value={selection?toInput(selection.end):''} min={toInput(range.start)} max={toInput(range.end)} onChange={e=>changeInput('end',e.target.value)}/></label></div>
+              <div className="target-choice"><div><label>{t('打流目标')}</label><strong title={targetDisplay||undefined}>{targetDisplay||t('尚未选择目标')}</strong></div><button className="button secondary" type="button" disabled={active||!!pending||submitting||clearing} aria-label={t(targetDisplay?'更换打流目标':'选择打流目标')} onClick={openTargetPicker}><Target size={14}/>{t(targetDisplay?'更换目标':'选择目标')}</button></div>
               <label className="speed-field" htmlFor="replay-speed">{t('回放倍速')}<select id="replay-speed" value={speed} onChange={event=>setSpeed(event.target.value==='burst'?'burst':Number(event.target.value))} disabled={submitting||!!pending}>{[.5,1,2,5,10].map(value=><option key={value} value={value}>{value}×</option>)}<option value="burst">∞</option></select><span>{t(speed==='burst'?'忽略历史请求间隔，一次性发送所选区间的全部请求。':'倍速调整请求间隔，任务开始后保持不变。')}</span></label>
-              <div className="selection-footer"><span>{selection?validSelection?t('已选择 {minutes} 分 {seconds} 秒',{minutes:Math.floor((selection.end-selection.start)/60),seconds:Math.round((selection.end-selection.start)%60)}):t('请选择窗口内有效的开始与结束时间'):t('在折线图中拖动，或输入时间')}<small>{t('时间范围包含起点，不包含终点')}</small></span><button className="button primary" onClick={()=>setConfirmOpen(true)} disabled={!validSelection||!canCreate||!!model?.replayError}><Play size={14}/>{t(active?'回放进行中':'确认回放')}</button></div>
+              <div className="selection-footer"><span>{selection?validSelection?t('已选择 {minutes} 分 {seconds} 秒',{minutes:Math.floor((selection.end-selection.start)/60),seconds:Math.round((selection.end-selection.start)%60)}):t('请选择窗口内有效的开始与结束时间'):t('在折线图中拖动，或输入时间')}<small>{t('时间范围包含起点，不包含终点')}</small></span><button className="button primary" onClick={()=>setConfirmOpen(true)} disabled={!validSelection||!canCreate||!targetModel||!!model?.replayError}><Play size={14}/>{t(active?'回放进行中':'确认回放')}</button></div>
             </div>
           </section>
           <section className={`chart-panel replay-panel ${!replay?'no-replay':''}`}>
             <div className="panel-header"><div><span className="panel-index">02</span><h3>{t('回放观测')}</h3></div><div className="panel-header-actions"><span className={`badge ${replay?.status==='paused'?'neutral':active?'live':replay?.status==='failed'?'failed':'neutral'}`}>{active&&replay?.status!=='paused'&&<i/>}{t(replay?statusNames[replay.status]:'等待回放')}</span><span title={t(clearDisabledReason||'清空当前任务的观测数据')}><button className="button secondary clear-replay" type="button" disabled={!!clearDisabledReason} aria-describedby="clear-replay-hint" onClick={()=>void replayController.clear().then(cleared=>{if(cleared)setConfirmOpen(false);})}>{clearing?<LoaderCircle size={13} className="spin"/>:<Trash2 size={13}/>}<span>{t(clearing?'清空中…':'清空数据')}</span></button></span></div></div>
             <span id="clear-replay-hint" className="sr-only">{t(clearDisabledReason||'清空当前任务的观测数据')}</span>
             {clearNotice&&<div className="replay-clear-notice" role="status"><Check size={14}/>{t(clearNotice)}</div>}
-            <div className="panel-model"><strong>{replay?.modelName||t('等待创建回放任务')}</strong><span>{replay?.startedAt!==undefined?t('{time} 开始',{time:dateTime(replay.startedAt)}):t('回放开始后自动获取模型曲线')}</span></div>
+            <div className="panel-model"><strong>{replay?`${replay.sourceModelName||replay.sourceModelId||replay.modelName} → ${replay.modelName}`:t('等待创建回放任务')}</strong><span>{replay?.startedAt!==undefined?t('{time} 开始',{time:dateTime(replay.startedAt)}):t('回放开始后自动获取模型曲线')}</span></div>
             {replay&&<>
               <ReplayProgress replay={replay} language={language}/>
               <div className="chart-toolbar"><span className="legend"><i className="purple"/>{t('正在处理')}<i className="teal"/>{t('等待处理')}</span><label className="relative"><input type="checkbox" checked={relative} onChange={e=>setRelative(e.target.checked)}/>{t('相对时间')}{relative&&replayRange?t('（{unit}）',{unit:relativeTimeUnit(replayRange.end-replayRange.start,language)}):''}</label></div>
@@ -281,7 +308,7 @@ export default function App() {
               <div className="replay-caption">{t('已完成包含处理结束的失败请求；任务结果以状态为准。')}</div>
               <div className="replay-caption">{t(mode==='demo'?replay.speed==='burst'?'模拟回放，一次性发送全部请求并等待处理完成；曲线不代表真实优化效果。':'模拟回放，时长随倍速调整；曲线不代表真实优化效果。':'实例指标可能包含其他流量；回放尾部指标受采集和缓存延迟影响。')}</div>
             </>}
-            {!replay&&<div className="replay-empty"><div className="empty-orbit"><Activity size={28}/><span className="orbit-dot"/></div><h4>{t('让历史流量，再跑一次')}</h4><p>{t('在左侧选定时间区间并确认回放。')}<br/>{t('该模型的新处理与等待曲线将在这里展示。')}</p><div className="empty-steps"><span><span>1</span>{t('选择区间')}</span><span className="step-line"/><span><span>2</span>{t('确认回放')}</span><span className="step-line"/><span><span>3</span>{t('观察效果')}</span></div><div className="empty-tip"><Check size={14}/>{t('切换查询模型不会改变已创建的回放任务')}</div></div>}
+            {!replay&&<div className="replay-empty"><div className="empty-orbit"><Activity size={28}/><span className="orbit-dot"/></div><h4>{t('让历史流量，再跑一次')}</h4><p>{t('在左侧选定时间区间并确认回放。')}<br/>{t('该模型的新处理与等待曲线将在这里展示。')}</p><div className="empty-steps"><span><span>1</span>{t('选择区间')}</span><span className="step-line"/><span><span>2</span>{t('确认回放')}</span><span className="step-line"/><span><span>3</span>{t('观察效果')}</span></div><div className="empty-tip"><Check size={14}/>{t('切换来源查询不会改变已创建的来源和目标')}</div></div>}
           </section>
         </div>
         <section className="latency-section" aria-label={t('延迟数据')}>
@@ -296,7 +323,8 @@ export default function App() {
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>
-    {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label={t('关闭')} disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">{t('确认回放历史流量')}</h2><p>{t(speed==='burst'?'将所选时间段的全部请求一次性发送给该模型当前部署。':'将所选时间段的请求按所选倍速发送给该模型当前部署。')}</p><dl><dt>{t('模型')}</dt><dd>{model?.name}</dd><dt>{t('开始时间')}</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>{t('结束时间')}</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>{t('回放倍速')}</dt><dd>{speed==='burst'?'∞':`${speed}×`}</dd><dt>{t('模式')}</dt><dd>{t(mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求')}</dd></dl>{(error||actionError)&&<div className="chart-error" role="alert">{message(actionError||error)}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>{t('取消')}</button><button className="button primary" disabled={submitting||!ready||active||clearing} onClick={()=>pending?void replayController.retryPending():void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}{t('开始回放')}</button></div></section></div>}
+    {targetPickerOpen&&<div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)setTargetPickerOpen(false);}}><section className="modal target-picker" role="dialog" aria-modal="true" aria-labelledby="target-picker-title"><button className="modal-close icon-button" aria-label={t('关闭')} onClick={()=>setTargetPickerOpen(false)}><X size={19}/></button><div className="modal-icon"><Target size={21}/></div><h2 id="target-picker-title">{t('选择打流目标')}</h2><p>{t('历史请求从所选来源模型读取，并发送到这里选择的 LiteLLM 目标。')}</p><label className="target-search"><Search size={15}/><input autoFocus type="search" aria-label={t('搜索目标模型')} placeholder={t('搜索目标模型')} value={targetQuery} onChange={event=>setTargetQuery(event.target.value)}/></label><div className="target-picker-toolbar"><span>{targetModelsLoading?t('正在加载目标列表…'):t('{count} 个可用目标',{count:targetModels.length})}</span><button className="icon-button" type="button" title={t('刷新目标列表')} aria-label={t('刷新目标列表')} disabled={targetModelsLoading} onClick={()=>void refreshTargets()}><RefreshCw size={15} className={targetModelsLoading?'spin':''}/></button></div>{targetModelsError?<div className="error-banner" role="alert">{message(targetModelsError)}<button className="button secondary" type="button" onClick={()=>void refreshTargets()}>{t('重试')}</button></div>:targetModelsLoading?<div className="target-empty"><LoaderCircle size={18} className="spin"/>{t('正在加载目标列表…')}</div>:filteredTargets.length?<div className="target-list">{filteredTargets.map(name=><button key={name} className="target-option" type="button" aria-pressed={targetModelId===name} onClick={()=>{setTargetModelId(name);setTargetPickerOpen(false);}}><span>{name}</span>{targetModelId===name&&<Check size={16}/>}</button>)}</div>:<div className="target-empty">{targetModels.length?t('没有匹配的目标模型'):t('没有可用目标模型')}</div>}</section></div>}
+    {confirmOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><button className="modal-close icon-button" aria-label={t('关闭')} disabled={submitting} onClick={()=>setConfirmOpen(false)}><X size={19}/></button><div className="modal-icon"><Play size={22}/></div><h2 id="confirm-title">{t('确认回放历史流量')}</h2><p>{t(speed==='burst'?'将所选时间段的全部请求一次性发送到已选目标。':'将所选时间段的请求按所选倍速发送到已选目标。')}</p><dl><dt>{t('来源模型')}</dt><dd>{model?.name}</dd><dt>{t('打流目标')}</dt><dd>{targetModel}</dd><dt>{t('开始时间')}</dt><dd>{selection&&fullDateTime(selection.start)}</dd><dt>{t('结束时间')}</dt><dd>{selection&&fullDateTime(selection.end)}</dd><dt>{t('回放倍速')}</dt><dd>{speed==='burst'?'∞':`${speed}×`}</dd><dt>{t('模式')}</dt><dd>{t(mode==='demo'?'模拟演示，不发送真实流量':'后端回放，发送真实历史请求')}</dd></dl>{(error||actionError)&&<div className="chart-error" role="alert">{message(actionError||error)}</div>}<div className="modal-actions"><button className="button secondary" disabled={submitting} onClick={()=>setConfirmOpen(false)}>{t('取消')}</button><button className="button primary" disabled={submitting||!ready||active||clearing||!targetModel} onClick={()=>pending?void replayController.retryPending():void beginReplay()}>{submitting?<LoaderCircle size={15} className="spin"/>:<Play size={14}/>}{t('开始回放')}</button></div></section></div>}
     {settingsOpen&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close icon-button" aria-label={t('关闭')} onClick={()=>setSettingsOpen(false)}><X size={19}/></button><h2 id="settings-title">{t('后端连接设置')}</h2>
       <p>{t('模型指标使用 BACKEND_URL；回放可单独配置 REPLAY_BACKEND_URL。修改 .env.local 后重新运行 npm run dev。')}</p>
       {PROXY_AUTH?<p className="settings-note">{t('回放认证由同源服务端代理提供，刷新后自动恢复。')}</p>:<>
@@ -310,7 +338,7 @@ export default function App() {
         <label>{t('指标认证值')}<input type="password" autoComplete="off" value={metricsKey} onChange={event=>setMetricsKey(event.target.value)} placeholder={metricsHeader==='Authorization'?'Bearer <API_KEY>':'API_KEY'}/></label>
         <p>{t('仅用于 Prometheus 查询，留空则不携带认证。凭据仅在页面内存中保存；Authorization 请填写完整 Bearer 值。')}</p>
       </details>
-      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>{t('回放 model_id = {model}',{model:model.replayModelId||model.id})}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||clearing} onClick={()=>{
+      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>/api/models</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>source_model = {model.replayModelId||model.id}</code><code>target_model = {targetModel||'未选择'}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||clearing} onClick={()=>{
         const metricsAuth={apiKey:metricsKey.trim(),authHeader:metricsHeader};
         if(metricsAuth.apiKey!==appliedMetrics.current.apiKey || metricsAuth.authHeader!==appliedMetrics.current.authHeader){
           setMetricsAuth(metricsAuth);appliedMetrics.current=metricsAuth;setMetricsIdentity(value=>value+1);setRefreshToken(value=>value+1);

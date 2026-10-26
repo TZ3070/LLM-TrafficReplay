@@ -28,7 +28,8 @@ const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
       } else if (url.pathname === '/api/prometheus/query_range') {
         const start = Number(url.searchParams.get('start')), end = Number(url.searchParams.get('end'));
         body = { status: 'success', data: { resultType: 'matrix', result: [{ metric: { model_name: 'http-model' }, values: [[start, '1'], [end, '2']] }] } };
-      } else if (url.pathname === '/api/replays/active') body = { active: false, task: null };
+      } else if (url.pathname === '/api/models') body = { target_models: ['http-target'] };
+      else if (url.pathname === '/api/replays/active') body = { active: false, task: null };
       else if (url.pathname === '/api/replays' && req.method() === 'POST') {
         const input = req.postDataJSON(), key = req.headers()['idempotency-key'];
         state.creates.push({ body: input, key });
@@ -59,6 +60,8 @@ const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
     // Chromium normalizes zero seconds away when validating datetime-local fills.
     await inputs.first().fill((await inputs.first().getAttribute('min')).replace(/:00$/, ''));
     await inputs.last().fill((await inputs.last().getAttribute('max')).replace(/:00$/, ''));
+    await page.getByRole('button', { name: '选择打流目标', exact: true }).click();
+    await page.locator('.target-option').first().click();
     const confirm = page.getByRole('button', { name: '确认回放', exact: true });
     await expect(confirm).toBeEnabled(); await confirm.click();
     const start = page.getByRole('button', { name: '开始回放', exact: true });
@@ -81,8 +84,8 @@ const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
     assert.equal(http.state.creates.length, 1);
     const original = http.state.creates[0];
     assert.match(original.key, uuidV4);
-    assert.deepEqual(Object.keys(original.body).sort(), ['end_time', 'model_id', 'speed', 'start_time']);
-    assert.equal(original.body.model_id, 'http-model');
+    assert.deepEqual(Object.keys(original.body).sort(), ['end_time', 'source_model', 'speed', 'start_time', 'target_model']);
+    assert.equal(original.body.source_model, 'http-model');assert.equal(original.body.target_model, 'http-target');
     assert(original.body.end_time > original.body.start_time);
     // Retrying must reuse the saved key, even when generating a new key is impossible.
     await http.page.evaluate(() => Object.defineProperty(crypto, 'getRandomValues', { configurable: true, value: undefined }));

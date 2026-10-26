@@ -32,12 +32,14 @@ const assert = require('node:assert/strict');
           }
           response={status:'success',data:{resultType:'matrix',result:[{metric:{model_name:'benchmark-model'},values:[[start,'2'],[end,'3']]}]}};
         }
+      } else if(url.pathname==='/api/models') {
+        response={target_models:['benchmark-model']};
       } else {
         assert.equal(request.headers().authorization,'Bearer test-benchmark-key');
         if(url.pathname==='/api/replays/active') {response={active:false,task:null};}
         else if(request.method()==='POST') {
           assert.equal(url.pathname,'/api/replays');
-          assert.deepEqual(Object.keys(request.postDataJSON()).sort(),['end_time','model_id','speed','start_time']);
+          assert.deepEqual(Object.keys(request.postDataJSON()).sort(),['end_time','source_model','speed','start_time','target_model']);
           assert(request.headers()['idempotency-key']);
           status=202;response=creation;
         } else {
@@ -60,6 +62,8 @@ const assert = require('node:assert/strict');
     const inputs=page.locator('.selection-form input');
     await inputs.first().fill(await inputs.first().getAttribute('min'));
     await inputs.last().fill(await inputs.last().getAttribute('max'));
+    await page.getByRole('button',{name:'选择打流目标',exact:true}).click();
+    await page.locator('.target-option').first().click();
     const begin=async()=>{
       await page.getByRole('button',{name:'确认回放',exact:true}).click();
       await page.getByRole('button',{name:'开始回放',exact:true}).click();

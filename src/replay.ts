@@ -86,7 +86,7 @@ export function restoreReplay(raw: unknown, metricsMap: Record<string,string> = 
   // 兼容旧 Benchmark 将逻辑别名直接作为 model_name 的响应；显式部署标签仍优先。
   if (labels?.model_name === modelId && metricsMap[modelId]) labels={...labels,model_name:metricsMap[modelId]};
   const metricsName=typeof labels?.model_name === 'string' ? labels.model_name : metricsMap[modelId] || same?.metricsName || modelId;
-  const base: Replay={...same,id,modelId,sourceModelId,modelName:same?.modelName || metricsName,metricsName,source:{start,end},status:same?.status ?? 'queued'};
+  const base: Replay={...same,id,modelId,sourceModelId,sourceModelName:same?.sourceModelName || sourceModelId,modelName:same?.modelName || modelId,metricsName,source:{start,end},status:same?.status ?? 'queued'};
   return applyReplayResponse({...response,target:{metrics_labels:labels},status:response?.status ?? 'queued'},base);
 }
 

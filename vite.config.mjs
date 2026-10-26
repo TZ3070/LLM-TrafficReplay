@@ -24,6 +24,8 @@ export function createBackendProxy(env) {
   const proxy = {};
   const replayAddress=env.REPLAY_BACKEND_URL || env.BACKEND_URL;
   if(replayAddress) {
+    // Benchmark exposes its LiteLLM target list beside replay endpoints.
+    proxy['^/api/models(?:$|[/?])'] = proxyOptions(replayAddress);
     const create = env.VITE_REPLAY_CREATE_PATH || '/api/replays';
     const status = env.VITE_REPLAY_STATUS_PATH || '/api/replays/{id}';
     const active = env.VITE_REPLAY_ACTIVE_PATH || '/api/replays/active';

@@ -86,7 +86,7 @@ export default function ReplayThroughput({ replay, mode, api, config, language, 
     <div className="section-title"><div><h2>{t('Token 吞吐率趋势')}</h2><span>TOKEN THROUGHPUT</span></div><span className="section-hint">{t('统计窗口 {window} · 每 30s 更新', { window: promDuration(config.windowSeconds) })}</span></div>
     <div className="replay-trend-context"><span>{target ? `requested_model=${target.requestedModel}` : replay?.modelId || t('等待创建回放任务')}</span>{replay && <code title={replay.id}>{replay.id}</code>}<span role="status">{t(status)}</span></div>
     {replay && <div className="replay-latency-source">{target && Object.entries(target.labels).map(([key, value]) => `${key}=${value}`).join(' · ') || t('仅按模型筛选，可能包含其他部署')}<br/>{t('LiteLLM 记账窗口吞吐，可能包含其他业务流量')}</div>}
-    {!configured && replay && <p className="replay-latency-note">{t('配置 VITE_REPLAY_THROUGHPUT_CONFIG.targets，将回放目标 model_id 映射为 requested_model；指标来自 LiteLLM，不自动回退到 vLLM。')}</p>}
+    {!configured && replay && <p className="replay-latency-note">{t('配置 VITE_REPLAY_THROUGHPUT_CONFIG.targets，将回放目标 target_model 映射为 requested_model；指标来自 LiteLLM，不自动回退到 vLLM。')}</p>}
     <div className="replay-trend-toolbar"><span>{t('曲线以实际打流时间为起点')}</span><label className="relative"><input type="checkbox" checked={relative} onChange={event => setRelative(event.target.checked)}/>{t('相对时间')}</label></div>
     <div className="chart-panel replay-trend-panel" data-replay-trend="throughput">
       <div className="replay-trend-panel-header"><h3>{t('输入 / 输出 / 总 Token')}</h3><span>token/s · {t('回溯 {window}', { window: promDuration(config.windowSeconds) })}</span></div>

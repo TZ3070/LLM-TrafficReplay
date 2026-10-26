@@ -6,6 +6,8 @@ const assert = require('assert');
   const page=await browser.newPage({viewport:{width:1440,height:1120}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('http://127.0.0.1:4173');
+  await page.getByRole('button',{name:'选择打流目标',exact:true}).click();
+  await page.getByRole('button',{name:'Qwen3-32B',exact:true}).click();
   // “延迟数据”与“回放实时延迟”两区渲染相同卡片标题，需限定区域避免严格模式多元素命中。
   await page.getByRole('region',{name:'延迟数据'}).getByText('首 TOKEN 延迟',{exact:true}).waitFor();
   await page.waitForTimeout(1000);
@@ -25,7 +27,7 @@ const assert = require('assert');
   await page.waitForTimeout(1000);
   await page.locator('#model').selectOption('Llama-3.3-70B');
   await page.waitForTimeout(300);
-  assert((await page.locator('.replay-panel .panel-model strong').innerText())==='Qwen3-32B','replay must retain its model');
+  assert((await page.locator('.replay-panel .panel-model strong').innerText())==='Qwen3-32B → Qwen3-32B','replay must retain its source and target');
   assert(await page.locator('.selection-form input').first().inputValue()==='','model switching must clear selection');
   await page.screenshot({path:path.resolve('replay-preview.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});

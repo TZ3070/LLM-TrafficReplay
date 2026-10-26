@@ -40,6 +40,8 @@ const terminal = status => ['succeeded', 'failed', 'cancelled'].includes(status)
           const result = range ? [{ metric, values: [[start, query.includes('kv_cache') ? '42' : '2']] }] : [{ metric, value: [start, '0.222'] }];
           body = { status: 'success', data: { resultType: range ? 'matrix' : 'vector', result } };
         }
+      } else if(url.pathname==='/api/models') {
+        body={target_models:['clear-model']};
       } else {
         assert.equal(req.headers().authorization, 'Bearer clear-test');
         if (req.method() !== 'GET') {
@@ -78,6 +80,10 @@ const terminal = status => ['succeeded', 'failed', 'cancelled'].includes(status)
     await inputs.last().fill((await inputs.last().getAttribute('max')).replace(/:00$/, ''));
   };
   const begin = async page => {
+    if(await page.locator('.target-choice button').isEnabled()){
+      await page.locator('.target-choice button').click();
+      await page.locator('.target-option').first().click();
+    }
     await page.getByRole('button', { name: '确认回放', exact: true }).click();
     await page.getByRole('button', { name: '开始回放', exact: true }).click();
   };
@@ -102,6 +108,8 @@ const terminal = status => ['succeeded', 'failed', 'cancelled'].includes(status)
     await finish(main); await select(main.page);
     await expect(main.page.locator('[data-cache-metric="kv"] .metric-value')).toContainText('42');
     const before = await main.page.evaluate(key => JSON.parse(localStorage.getItem(key)).history, snapshotKey);
+    // Expire the 30s metric cache before testing a deliberately delayed refresh.
+    await main.page.clock.setFixedTime(new Date((now + 61) * 1000));
     main.state.holdObservation(); await main.page.getByRole('button', { name: '刷新指标', exact: true }).click();
     await expect.poll(() => main.state.held).toBeGreaterThan(0);
     const activeBefore = main.state.activeCalls;
