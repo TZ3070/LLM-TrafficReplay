@@ -32,18 +32,22 @@ function apiPath(value: string | undefined, fallback: string): string {
   return path;
 }
 
-export function createApiConfig(env: Record<string, string | undefined>): ApiConfig {
-  let modelMetricsMap: Record<string, string> = {};
-  if (env.VITE_MODEL_METRICS_MAP?.trim()) {
+function modelMap(value: string | undefined, name: string): Record<string, string> {
+  if (value?.trim()) {
     let raw: unknown;
-    try { raw = JSON.parse(env.VITE_MODEL_METRICS_MAP); }
-    catch { throw new Error('VITE_MODEL_METRICS_MAP 必须是 JSON 对象'); }
+    try { raw = JSON.parse(value); }
+    catch { throw new Error(`${name} 必须是 JSON 对象`); }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
       Object.entries(raw).some(([key, value]) => !key.trim() || typeof value !== 'string' || !value.trim())) {
-      throw new Error('VITE_MODEL_METRICS_MAP 应为 {"LiteLLM逻辑模型名":"vLLM指标model_name"}');
+      throw new Error(`${name} 应为 {"LiteLLM逻辑模型名":"vLLM指标model_name"}`);
     }
-    modelMetricsMap = raw as Record<string, string>;
+    return raw as Record<string, string>;
   }
+  return {};
+}
+
+export function createApiConfig(env: Record<string, string | undefined>): ApiConfig {
+  const modelMetricsMap = modelMap(env.VITE_MODEL_METRICS_MAP, 'VITE_MODEL_METRICS_MAP');
   const metricNames: ApiConfig['metricNames'] = {};
   if (env.VITE_PROMETHEUS_METRIC_NAMES?.trim()) {
     let raw: unknown;
@@ -82,4 +86,18 @@ export function createApiConfig(env: Record<string, string | undefined>): ApiCon
     metricNames,
     mixedLatencyRoleModels
   };
+}
+
+/** 历史固定使用原指标源；回放可切换到灰度，LiteLLM 吞吐可单独指定。 */
+export function createMetricsApiConfigs(env: Record<string, string | undefined>) {
+  const history = createApiConfig(env);
+  const replay = {
+    ...history,
+    prometheusPrefix: apiPath(env.VITE_REPLAY_PROMETHEUS_API_PREFIX, history.prometheusPrefix),
+    // 显式 {} 可关闭历史映射的继承，避免灰度目标别名影响正式历史来源。
+    modelMetricsMap: env.VITE_REPLAY_MODEL_METRICS_MAP?.trim()
+      ? modelMap(env.VITE_REPLAY_MODEL_METRICS_MAP, 'VITE_REPLAY_MODEL_METRICS_MAP') : history.modelMetricsMap,
+  };
+  const throughput = { ...replay, prometheusPrefix: apiPath(env.VITE_REPLAY_THROUGHPUT_PROMETHEUS_API_PREFIX, replay.prometheusPrefix) };
+  return { history, replay, throughput };
 }

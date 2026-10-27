@@ -29,7 +29,7 @@ export function replaySpeed(value: unknown): ReplaySpeed | undefined {
 }
 
 /** 创建和状态响应共用适配；未知/省略的字段不覆盖已经收到的有效数据。 */
-export function applyReplayResponse(raw: unknown, previous: Replay, receivedAt = Date.now() / 1000): Replay {
+export function applyReplayResponse(raw: unknown, previous: Replay, receivedAt = Date.now() / 1000, metricsMap: Record<string, string> = {}): Replay {
   const response = object(raw);
   if (!response || !STATUSES.has(response.status as Replay['status'])) throw new Error('未知回放状态');
   if (typeof response.replay_id === 'string' && response.replay_id !== previous.id) throw new Error('回放任务 ID 不匹配');
@@ -38,7 +38,11 @@ export function applyReplayResponse(raw: unknown, previous: Replay, receivedAt =
   if (isTerminalReplay(previous.status) && response.status !== previous.status) return previous;
   const progress = object(response.progress);
   const labels = object(object(response.target)?.metrics_labels);
-  const metricsLabels = labels && Object.values(labels).every(value => typeof value === 'string') ? labels as Record<string, string> : previous.metricsLabels;
+  let metricsLabels = labels && Object.values(labels).every(value => typeof value === 'string') ? labels as Record<string, string> : previous.metricsLabels;
+  // 轮询和取消响应都可能把 LiteLLM 别名返回为 model_name，终态同样需要映射。
+  if (metricsLabels?.model_name === previous.modelId && metricsMap[previous.modelId]) {
+    metricsLabels = { ...metricsLabels, model_name: metricsMap[previous.modelId] };
+  }
   const status=previous.status === 'cancelling' && !isTerminalReplay(response.status as Replay['status']) ? 'cancelling' : response.status as Replay['status'];
   // 完整任务响应必须重新声明控制能力，不能仅凭刷新前的缓存启用旧后端按钮。
   const fullTask=typeof response.replay_id === 'string';

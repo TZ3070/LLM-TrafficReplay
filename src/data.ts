@@ -145,7 +145,7 @@ const defaultMetricNames: Record<LatencyMetricKey, MetricNameConfig> = {
  * 五张首页卡片各发一条即时 query。后端按 TTL 缓存后透传 Prometheus 的原样响应。
  * rate 窗口就是历史查询范围（例如 30m、24h、7d），不是固定 1m。
  */
-export interface MetricQueryOptions { labels?: Labels; evaluatedAt?: number }
+export interface MetricQueryOptions { labels?: Labels; evaluatedAt?: number; freshAfter?: number }
 export function metricQueries(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG, options: MetricQueryOptions = {}) {
   const f = selector(modelName, options.labels);
   const window = promDuration(windowSeconds);
@@ -212,7 +212,7 @@ export function adaptModels(raw: unknown, metricsMap: Record<string, string> = {
   }
   return [...grouped.values()];
 }
-export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay' | 'targets'; timeoutMs?: number }
+export interface ClientOptions { apiKey?: string; authHeader?: 'x-litellm-key' | 'x-api-key' | 'Authorization'; service?: 'metrics' | 'replay' | 'targets'; timeoutMs?: number; rateLimitKey?: string }
 export class ApiError extends Error {
   constructor(message: string, public status: number, public payload?: any, public retryAfterMs?: number) { super(message); }
 }
@@ -221,14 +221,14 @@ let metricsAuth: ClientOptions = {}, metricsIdentity = 0;
 export function setMetricsAuth(auth: Pick<ClientOptions, 'apiKey' | 'authHeader'>): void {
   if (metricsAuth.apiKey === auth.apiKey && metricsAuth.authHeader === auth.authHeader) return;
   metricsAuth = { ...auth, service: 'metrics' }; metricsIdentity++; promCache.clear();
-  rateLimitUntil.delete('metrics');
+  for(const key of rateLimitUntil.keys())if(key==='metrics'||key.startsWith('metrics:'))rateLimitUntil.delete(key);
 }
 // 在途请求独立去重，不受成功缓存的 30s TTL 限制。
 const promCache = new Map<string, { promise: Promise<any>; startedAt: number; expires?: number }>();
-// 指标与回放分别退避，避免指标后端限流阻止 Benchmark 的查询或取消。
+// 各指标入口与回放分别退避，避免灰度限流阻断正式查询或 Benchmark 操作。
 const rateLimitUntil = new Map<string,number>();
 export function request(path: string, options: RequestInit = {}, auth?: ClientOptions): Promise<any> {
-  const until=rateLimitUntil.get(auth?.service || 'metrics') || 0;
+  const until=rateLimitUntil.get(auth?.rateLimitKey || auth?.service || 'metrics') || 0;
   if(Date.now() < until) return Promise.reject(new ApiError('请求限流，正在等待后恢复', 429,undefined,until-Date.now()));
   return performRequest(path,options,auth);
 }
@@ -250,7 +250,8 @@ export function requestPrometheus(path: string, options: { timeoutMs?: number; f
   if (existing && (existing.expires === undefined || existing.expires > Date.now())
     && existing.startedAt >= (options.freshAfter ?? 0)) return existing.promise;
   for (const [cachedKey, value] of promCache) if (value.expires !== undefined && value.expires <= Date.now()) promCache.delete(cachedKey);
-  const promise = request(path, {}, { ...metricsAuth, service: 'metrics', timeoutMs: options.timeoutMs });
+  const rateLimitKey = 'metrics:' + path.split('?')[0].replace(/\/(?:query|query_range)$/, '');
+  const promise = request(path, {}, { ...metricsAuth, service: 'metrics', timeoutMs: options.timeoutMs, rateLimitKey });
   const entry = { promise, startedAt: Date.now(), expires: undefined as number | undefined };
   promCache.set(key, entry);
   void promise.then(() => { if (promCache.get(key) === entry) entry.expires = Date.now() + 30000; },
@@ -272,7 +273,7 @@ async function performRequest(path: string, options: RequestInit = {}, auth?: Cl
     const retryHeader=response.headers.get('Retry-After');
     const retrySeconds=retryHeader !== null && retryHeader.trim() !== '' ? Number(retryHeader) : NaN;
     const retryAfterMs=retryHeader === null ? 60000 : Math.max(1000,Number.isFinite(retrySeconds)?retrySeconds*1000:Date.parse(retryHeader)-Date.now() || 60000);
-    if(response.status===429 && (auth?.service === 'replay' || requestMetricsIdentity === metricsIdentity)) rateLimitUntil.set(auth?.service || 'metrics',Date.now()+retryAfterMs);
+    if(response.status===429 && (auth?.service === 'replay' || requestMetricsIdentity === metricsIdentity)) rateLimitUntil.set(auth?.rateLimitKey || auth?.service || 'metrics',Date.now()+retryAfterMs);
     const raw = await response.text();
     let result;
     // 错误只展示路由，不输出查询串或认证头，便于定位后端不存在的接口。
@@ -295,11 +296,11 @@ export function promPath(query: string, range?: TimeRange, config = DEFAULT_API_
   return `${config.prometheusPrefix}/${range ? 'query_range' : 'query'}?${params}`;
 }
 /** 历史窗口与回放窗口共用此入口，只是模型标签和查询时间不同。 */
-export async function fetchLoad(modelName: string, range: TimeRange, labels?: Labels, config: ApiConfig = DEFAULT_API_CONFIG): Promise<LoadData> {
+export async function fetchLoad(modelName: string, range: TimeRange, labels?: Labels, config: ApiConfig = DEFAULT_API_CONFIG, options: { freshAfter?: number } = {}): Promise<LoadData> {
   const queries = loadQueries(modelName, labels);
   const keys = ['running', 'waiting'] as const;
   // 单条曲线失败时保留另一条的成功结果，错误信息交给页面展示。
-  const results = await Promise.allSettled(keys.map(async key => parseMatrix(await requestPrometheus(promPath(queries[key], range, config)))));
+  const results = await Promise.allSettled(keys.map(async key => parseMatrix(await requestPrometheus(promPath(queries[key], range, config), options))));
   const data: LoadData = { running: [], waiting: [], errors: [] };
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') data[keys[i]] = r.value;
@@ -322,7 +323,7 @@ export function retainFailedLoad(previous: LoadData, next: LoadData): LoadData {
 export async function fetchMetrics(modelName: string, windowSeconds: number, config: ApiConfig = DEFAULT_API_CONFIG, options: MetricQueryOptions = {}): Promise<Metrics> {
   const queries = metricQueries(modelName, windowSeconds, config, options);
   const keys = Object.keys(queries) as MetricKey[];
-  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config)), options.labels?.model_name || modelName, config.mixedLatencyRoleModels)));
+  const results = await Promise.allSettled(keys.map(async key => parseLatencyVector(await requestPrometheus(promPath(queries[key], undefined, config), {freshAfter: options.freshAfter}), options.labels?.model_name || modelName, config.mixedLatencyRoleModels)));
   const data = {} as Metrics;
   results.forEach((r, i) => { data[keys[i]] = r.status === 'fulfilled' ? r.value : { error: r.reason.message }; if(r.status === 'rejected') console.warn(r.reason); });
   return data;

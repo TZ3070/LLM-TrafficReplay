@@ -3,6 +3,12 @@ services:
     build:
       context: .
       args:
+        VITE_PROMETHEUS_API_PREFIX: ${VITE_PROMETHEUS_API_PREFIX:-/api/prometheus}
+        VITE_REPLAY_PROMETHEUS_API_PREFIX: ${VITE_REPLAY_PROMETHEUS_API_PREFIX:-/api/replay-prometheus}
+        VITE_REPLAY_THROUGHPUT_PROMETHEUS_API_PREFIX: ${VITE_REPLAY_THROUGHPUT_PROMETHEUS_API_PREFIX:-}
+        # 目标 LiteLLM 别名与 vLLM model_name 不同时，通过前端映射，无需改 Benchmark。
+        VITE_MODEL_METRICS_MAP: ${VITE_MODEL_METRICS_MAP:-}
+        VITE_REPLAY_MODEL_METRICS_MAP: ${VITE_REPLAY_MODEL_METRICS_MAP:-}
         # 认证模式必须同时进入构建产物（前端行为）与运行环境（nginx 注入），两处取同一变量避免漂移。
         # proxy 模式构建所需的 BENCHMARK_API_KEY 校验由 Dockerfile 内置占位值满足，无需在此传入真实密钥。
         VITE_REPLAY_AUTH_MODE: ${VITE_REPLAY_AUTH_MODE:-manual}
@@ -16,6 +22,12 @@ services:
       BACKEND_URL: ${BACKEND_URL:?请在 .env 中配置 BACKEND_URL（看板指标后端地址）}
       # 独立 Benchmark 回放后端；留空则回放请求回落 BACKEND_URL。
       REPLAY_BACKEND_URL: ${REPLAY_BACKEND_URL:-}
+      # 灰度 Prometheus 由前端 Nginx 直接代理，不经过 Benchmark。
+      REPLAY_PROMETHEUS_URL: ${REPLAY_PROMETHEUS_URL:-}
+      REPLAY_PROMETHEUS_BEARER_TOKEN: ${REPLAY_PROMETHEUS_BEARER_TOKEN:-}
+      PROMETHEUS_PATH_PREFIX: ${VITE_PROMETHEUS_API_PREFIX:-/api/prometheus}
+      # 与构建时回放指标前缀保持一致。
+      REPLAY_PROMETHEUS_PATH_PREFIX: ${VITE_REPLAY_PROMETHEUS_API_PREFIX:-/api/replay-prometheus}
       # 回放路径前缀；须与前端构建使用的回放路由前缀一致，默认 /api/replays。
       REPLAY_PATH_PREFIX: ${REPLAY_PATH_PREFIX:-/api/replays}
       # 与 build args 同源；proxy 模式须配置 BENCHMARK_API_KEY。

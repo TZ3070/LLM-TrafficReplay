@@ -1,11 +1,23 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { emptyMetrics, metricQueries } from '../src/data';
-import { createReplayLatencyConfig, replayLatencyWindow, retainReplayLatency } from '../src/replayLatencyData';
+import { createReplayLatencyConfig, replayLatencyWindow, replayLoadWindow, retainReplayLatency } from '../src/replayLatencyData';
 import type { Replay } from '../src/types';
 
 const config = createReplayLatencyConfig({});
 const running: Replay = { id:'task', modelId:'alias', modelName:'old-model', metricsName:'optimized-model', source:{start:100,end:200}, status:'running', startedAt:1000.75 };
+
+test('replay load tail follows gray scrape interval and never settles an active task', () => {
+  const slow={scrapeSeconds:60,windowSeconds:240};
+  const ended={...running,status:'succeeded' as const,finishedAt:1100};
+  const plan=replayLoadWindow(ended,1160,slow)!;
+  assert.equal(plan.range.end,1220);
+  assert.equal(plan.settleAfter,1250);
+  assert.equal(replayLoadWindow({...running,finishedAt:1100},1200,slow)?.settleAfter,undefined);
+  assert.deepEqual(replayLoadWindow(ended,9999,slow),plan,'reload keeps the original task and tail time');
+  assert.equal(replayLoadWindow({...ended,startedAt:undefined},1300,slow),undefined);
+  assert.equal(replayLoadWindow(ended,1300,config)?.range.end,1130,'15s keeps the existing 30s tail');
+});
 
 test('replay latency waits for post-start samples and never includes pre-start data', () => {
   assert.equal(replayLatencyWindow({...running,startedAt:undefined}, 2000, config), undefined);

@@ -9,7 +9,7 @@ import ReplayThroughput from './ReplayThroughput';
 import { createReplayThroughputConfig } from './replayThroughputData';
 import ReplayCache from './ReplayCache';
 import { createReplayCacheConfig } from './replayCacheData';
-import { createReplayLatencyConfig } from './replayLatencyData';
+import { createReplayLatencyConfig, replayLoadWindow } from './replayLatencyData';
 import { isTerminalReplay } from './replay';
 import { readMode, readSnapshot, rememberMode, saveSnapshot } from './replayStorage';
 import { useReplay } from './useReplay';
@@ -17,7 +17,7 @@ import { relativeTimeUnit } from './chartTime';
 import { DISPLAY_TIME_ZONE, clock, dateTime, fullDateTime, toInput, fromInput } from './time';
 import { demoLoad, demoModels, emptyMetrics, fetchModels, fetchTargetModels, fetchLoad, fetchMetrics, formatValue, MODEL_DISCOVERY_QUERY, promDuration, queryTiming, retainFailedLoad, setMetricsAuth } from './data';
 import type { LoadData, Metrics, Model, Replay, ReplaySpeed, TimeRange } from './types';
-import { createApiConfig } from './apiConfig';
+import { createMetricsApiConfigs } from './apiConfig';
 import { localizeMessage, readLanguage, rememberLanguage, translate, type Language } from './i18n';
 /**
  * 页面编排层：负责选择条件、网络查询、回放任务和组件数据之间的流转。
@@ -27,7 +27,7 @@ import { localizeMessage, readLanguage, rememberLanguage, translate, type Langua
  * 完整请求的检索和重新发送在后端执行；本页只提交回放条件并观测指标。
  */
 const EMPTY: LoadData = { running:[],waiting:[],errors:[] };
-const API = createApiConfig(import.meta.env);
+const { history: API, replay: REPLAY_API, throughput: THROUGHPUT_API } = createMetricsApiConfigs(import.meta.env);
 const REPLAY_LATENCY = createReplayLatencyConfig(import.meta.env);
 const REPLAY_CACHE = createReplayCacheConfig(import.meta.env, REPLAY_LATENCY.scrapeSeconds);
 const REPLAY_THROUGHPUT = createReplayThroughputConfig(import.meta.env, REPLAY_LATENCY.scrapeSeconds);
@@ -99,7 +99,7 @@ export default function App() {
   const appliedMetrics=useRef({apiKey:'',authHeader:'x-api-key'});
   const [relative,setRelative]=useState(saved.history?.relative || false); // 只控制横轴展示，不改变查询边界或打流速度。
   const [speed,setSpeed]=useState<ReplaySpeed>(1);
-  const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:API.modelMetricsMap});
+  const replayController=useReplay({mode,auth:authSettings,authReady:PROXY_AUTH || !!authSettings.apiKey.trim(),scope:STORAGE_SCOPE,paths:PATHS,metricsMap:REPLAY_API.modelMetricsMap});
   const {replay,replayRef,submitting,ready,restoring,recoveryError,actionError,pending,cancelling,clearing,clearNotice,clearDisabledReason,restoredId}=replayController;
   // 定时查询读取最新选区，避免每次拖动都重建查询 effect 或立即发起 HTTP 请求。
   const selectionRef=useRef(selection); selectionRef.current=selection;
@@ -144,9 +144,10 @@ export default function App() {
     if(mode!=='backend'||modelMode!=='backend'||!replay||restoredId!==replay.id||historyRestored.current===replay.id)return;
     historyRestored.current=replay.id;
     const sourceId=replay.sourceModelId || replay.modelId;
-    const metricsName=replay.sourceMetricsName || API.modelMetricsMap[sourceId] || (sourceId===replay.modelId
-      ? replay.metricsLabels?.model_name || replay.metricsName
-      : sourceId);
+    // 同名逻辑模型在正式和灰度可有不同指标标签，历史不能借用目标标签。
+    // 仅原单源、共享映射且来源=目标的旧任务保留标签恢复兼容。
+    const legacySameSource=API.prometheusPrefix===REPLAY_API.prometheusPrefix && API.modelMetricsMap===REPLAY_API.modelMetricsMap && sourceId===replay.modelId;
+    const metricsName=replay.sourceMetricsName || API.modelMetricsMap[sourceId] || (legacySameSource?replay.metricsLabels?.model_name||replay.metricsName:sourceId);
     const snapshot=readSnapshot(STORAGE_SCOPE).history;
     const cached=snapshot?.modelId===metricsName && snapshot.range.start<=replay.source.start && snapshot.range.end>=replay.source.end ? snapshot : undefined;
     const duration=cached?.seconds || Math.max(30,replay.source.end-replay.source.start);
@@ -202,17 +203,15 @@ export default function App() {
       if(!live||busy||document.hidden||metricsSettled||current?.id!==id||current.startedAt===undefined)return;
       busy=true;
       try{
-        const start=current.startedAt;
-        // 起点固定，运行时终点随现在增长；结束后留 30s 尾部，供处理/等待曲线观测。
-        // 初始至少展示 30s：真实查询的未来部分应为空；demoLoad 会生成满窗口模拟点。
-        const end=current.finishedAt!==undefined?current.finishedAt+30:Math.max(start+30,Math.floor(Date.now()/1000));
-        const window={start,end};
-        // 与历史图共用 fetchLoad，但标签和时间来自回放任务；不是读取原历史区间。
-        const data=mode==='demo'?demoLoad(current.modelId,window,true):await fetchLoad(current.metricsName,window,current.metricsLabels,API);
+        const requestedAt=Date.now()/1000;
+        const plan=replayLoadWindow(current,requestedAt,REPLAY_LATENCY)!;
+        const window=plan.range;
+        // 与历史图共用解析，但指标源、标签和实际时间独立于历史查询。
+        const data=mode==='demo'?demoLoad(current.modelId,window,true):await fetchLoad(current.metricsName,window,current.metricsLabels,REPLAY_API,{freshAfter:plan.settleAfter!==undefined&&requestedAt>=plan.settleAfter?plan.settleAfter*1000:undefined});
         if(live&&replayRef.current?.id===id){setReplayRange(window);setReplayData(previous=>retainFailedLoad(previous,data));}
         // 后端报告完成后再等待采集/缓存延迟，并在一次无查询错误的结果后停止轮询。
         // 这是前端刷新停止条件，不证明档案完整，也不是通过折线推断任务成功。
-        if(current.finishedAt!==undefined && Date.now()/1000>current.finishedAt+60 && data.errors.length===0)metricsSettled=true;
+        if(plan.settleAfter!==undefined && requestedAt>=plan.settleAfter && data.errors.length===0)metricsSettled=true;
       }catch(e){if(live&&replayRef.current?.id===id)setReplayData(data=>({...data,errors:[(e as Error).message]}));}finally{busy=false;}
     };
     const visible=()=>{if(!document.hidden)void load();};
@@ -241,7 +240,7 @@ export default function App() {
     if(!model||!targetModel||!selection||!validSelection||!canCreate)return;
     const sourceModel=model.replayModelId||model.id;
     const body={source_model:sourceModel,target_model:targetModel,start_time:selection.start,end_time:selection.end,speed};
-    const targetMetricsName=API.modelMetricsMap[targetModel]||targetModel;
+    const targetMetricsName=REPLAY_API.modelMetricsMap[targetModel]||targetModel;
     const context:Replay={id:'',modelId:targetModel,sourceModelId:sourceModel,sourceModelName:model.name,sourceMetricsName:model.metricsName||model.name,modelName:targetModel,metricsName:targetMetricsName,source:{...selection},status:'queued',speed};
     await replayController.begin(body,context);
   };
@@ -316,10 +315,10 @@ export default function App() {
           <div className="metrics-context">{t('{model} · 延迟回溯 {window} · 即时查询',{model:model?.name||t('尚未选择模型'),window:promDuration(seconds)})}</div>
           <div className="metrics-grid">{LATENCY_CARDS.map(card=><LatencyCard key={card.key} metricKey={card.key} metric={metrics[card.key]} loading={metricsLoading} language={language}/>)}</div>
         </section>
-        <ReplayLatency key={`latency:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
-        <ReplayTrend key={`trend:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
-        <ReplayThroughput key={`throughput:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_THROUGHPUT} language={language} refreshToken={refreshToken}/>
-        <ReplayCache key={`cache:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={API} config={REPLAY_CACHE} language={language} refreshToken={refreshToken} taskStatus={replay ? t(statusNames[replay.status]) : undefined}/>
+        <ReplayLatency key={`latency:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={REPLAY_API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
+        <ReplayTrend key={`trend:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={REPLAY_API} config={REPLAY_LATENCY} language={language} refreshToken={refreshToken}/>
+        <ReplayThroughput key={`throughput:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={THROUGHPUT_API} config={REPLAY_THROUGHPUT} language={language} refreshToken={refreshToken}/>
+        <ReplayCache key={`cache:${mode}:${replay?.id||''}:${metricsIdentity}`} replay={replay} mode={mode} api={REPLAY_API} config={REPLAY_CACHE} language={language} refreshToken={refreshToken} taskStatus={replay ? t(statusNames[replay.status]) : undefined}/>
         <div className="bottom-note"><span><Terminal size={14}/>{t(mode==='demo'?'演示模式 · 所有曲线与任务均为模拟数据':'后端模式 · Prometheus 原样数据解析')}</span><span>{updatedAt?t('指标更新于 {time}',{time:clock(updatedAt)}):t('等待指标查询')}<span className="footer-dot">·</span>{t('时间：')}{DISPLAY_TIME_ZONE}</span></div>
       </main>
     </div>
@@ -338,7 +337,7 @@ export default function App() {
         <label>{t('指标认证值')}<input type="password" autoComplete="off" value={metricsKey} onChange={event=>setMetricsKey(event.target.value)} placeholder={metricsHeader==='Authorization'?'Bearer <API_KEY>':'API_KEY'}/></label>
         <p>{t('仅用于 Prometheus 查询，留空则不携带认证。凭据仅在页面内存中保存；Authorization 请填写完整 Bearer 值。')}</p>
       </details>
-      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{API.prometheusPrefix}/query</code><code>{API.prometheusPrefix}/query_range</code><code>/api/models</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>source_model = {model.replayModelId||model.id}</code><code>target_model = {targetModel||'未选择'}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||clearing} onClick={()=>{
+      <div className="endpoint-list"><code title={MODEL_DISCOVERY_QUERY}>{t('模型来源：Prometheus / vLLM')}</code><code>{t('历史指标入口：')}{API.prometheusPrefix}</code><code>{t('回放指标入口：')}{REPLAY_API.prometheusPrefix}</code><code>{t('吞吐指标入口：')}{THROUGHPUT_API.prometheusPrefix}</code><code>/api/models</code><code>{CREATE}</code><code>{ACTIVE}</code><code>{CANCEL}</code><code>{PAUSE}</code><code>{RESUME}</code>{model&&<><code>model_name = {model.metricsName||model.name}</code><code>source_model = {model.replayModelId||model.id}</code><code>target_model = {targetModel||'未选择'}</code></>}</div><div className="modal-actions"><button className="button primary" disabled={submitting||cancelling||clearing} onClick={()=>{
         const metricsAuth={apiKey:metricsKey.trim(),authHeader:metricsHeader};
         if(metricsAuth.apiKey!==appliedMetrics.current.apiKey || metricsAuth.authHeader!==appliedMetrics.current.authHeader){
           setMetricsAuth(metricsAuth);appliedMetrics.current=metricsAuth;setMetricsIdentity(value=>value+1);setRefreshToken(value=>value+1);

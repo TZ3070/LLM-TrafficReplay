@@ -303,7 +303,7 @@ count by (model_name) (vllm:num_requests_running)
 VITE_MODEL_METRICS_MAP='{"deepseek-service":"DeepSeek-R1"}'
 ```
 
-下拉框和历史指标使用 `DeepSeek-R1`；创建请求提交 `source_model: "deepseek-service"`。`target_model` 独立从目标列表选择；同一配置也可按目标别名查询实际 Prometheus 标签。
+下拉框和历史指标使用 `DeepSeek-R1`；创建请求提交 `source_model: "deepseek-service"`。`target_model` 独立从目标列表选择；灰度目标别名到实际指标名使用 `VITE_REPLAY_MODEL_METRICS_MAP` 单独配置，不混入正式来源映射；目标映射未配置时兼容旧的共享映射。
 
 若优化后的 Prometheus 模型名变为 `DeepSeek-R1-v2`，后端可以返回：
 
@@ -352,8 +352,8 @@ sum by (model_name) (
 
 ```text
 start = started_at
-end   = 有 finished_at 时：finished_at + 30
-        没有 finished_at 时：max(started_at + 30, 当前 Unix 秒)
+end   = 已终态且有 finished_at 时：finished_at + 2 × 灰度采集间隔（默认 15s，即 +30s）
+        其他情况：max(started_at + 30, 当前 Unix 秒)
 step  = max(5, ceil((end - start) / 60))
 ```
 
@@ -363,7 +363,7 @@ step  = max(5, ceil((end - start) / 60))
 
 如果后端缓存 `query_range`，缓存键必须包含 `query`、`start`、`end`、`step`。仅以 PromQL 为键会混淆同模型的历史窗口和回放窗口。当前前端自身按完整 URL 去重并缓存 30 秒。
 
-收到实际开始/结束时间时立即刷新一次曲线，运行时曲线独立每 30 秒刷新。前端在有 `finished_at`、当前时间超过 `finished_at + 60`，且当轮两条指标查询没有错误时，停止该任务的曲线轮询。这个条件只预留采集与缓存余量，不验证数据完整；空结果也可能满足停止条件。后端不能省略终态的 `finished_at`，否则曲线仍会持续轮询；状态查询已按终态独立停止。
+收到实际开始/结束时间时立即刷新一次曲线，运行时曲线独立每 30 秒刷新。已终态任务在 `finished_at + 2 × 灰度采集间隔 + 30 秒缓存余量` 之后发起一轮查询，且两条查询均无错误时停止负载轮询；最终查询绕过此前的前端缓存。使用请求发起时间判断，不能因响应途中休眠或变慢而提前停止。这个条件只预留采集与缓存余量，不验证数据完整；空结果也可能满足停止条件。后端不能省略终态的 `finished_at`，否则曲线仍会持续轮询；状态查询已按终态独立停止。
 
 任务在首个请求发送前就失败/取消时，后端应如实省略 `started_at`；前端停止状态查询且不创建曲线查询，不需要伪造开始时间。
 
@@ -433,6 +433,8 @@ Benchmark 当前全服务只允许一个活动任务，没有用户隔离；其�
 
 ## 11. 前端配置与联调
 
+正式/灰度分源（2026-10-27）：Benchmark 请求和响应契约不变，历史仍查正式 `/api/prometheus`。前端可设置 `VITE_REPLAY_PROMETHEUS_API_PREFIX=/api/replay-prometheus`，让全部回放 vLLM 观测经 Vite/本项目 Nginx **直接**查询灰度 Prometheus；代理服务端设置 `REPLAY_PROMETHEUS_URL=http://<GRAY_PROMETHEUS_HOST>:9090`，将 query/query_range 重写至原生 `/api/v1`。无需给 Benchmark 增加任何接口或配置。上述文档中的回放 `/api/prometheus/*` 路径，在双源模式下对应 `/api/replay-prometheus/*`。Token 吞吐默认跟随回放入口，可用 `VITE_REPLAY_THROUGHPUT_PROMETHEUS_API_PREFIX=/api/prometheus` 独立查询正式 LiteLLM 指标。未配置回放前缀时保持原单源兼容；Compose 模板默认启用双源。完整配置与验证见 [README](../README.md#正式历史与灰度回放指标分离2026-10-27)。
+
 `.env.local`：
 
 ```dotenv
@@ -446,6 +448,7 @@ VITE_REPLAY_CANCEL_PATH=/api/replays/{id}/cancel
 VITE_REPLAY_PAUSE_PATH=/api/replays/{id}/pause
 VITE_REPLAY_RESUME_PATH=/api/replays/{id}/resume
 VITE_MODEL_METRICS_MAP='{}'
+VITE_REPLAY_MODEL_METRICS_MAP='{}'
 ```
 
 `REPLAY_BACKEND_URL` 可留空，此时回放仍走 `BACKEND_URL`。独立配置时，Vite 将创建/状态路径优先转发给 Benchmark（支持自定义回放路径），其余 `/api` 请求仍走已有看板后端。两个地址只配置代理，不进入浏览器产物。修改配置后重新运行 `npm run dev`。静态生产部署需在 Web 服务中配置相同的路径分流。使用同源代理无需浏览器跨域；若另行采用跨域部署，后端需允许前端 Origin、GET/POST/OPTIONS，以及 `Content-Type`、`Idempotency-Key` 和所用认证头。
@@ -469,9 +472,9 @@ VITE_MODEL_METRICS_MAP='{}'
 
 活动查询返回 `{"active":true,"task":{...}}` 或 `{"active":false,"task":null}`。前端只在成功确认没有活动任务后才能新建；401/403/503、未知状态或不完整任务不能当作没有活动任务。
 
-状态与活动查询带 `?view=status`，后端省略全部逐请求 results；不带该参数的接口保持完整结果兼容。旧后端忽略参数也可用，但缺少 speed 时无法恢复真实倍速；前端不凭空显示 1×。任务标签应是实际 Prometheus 标签，LiteLLM 别名可通过后端 BENCHMARK_MODEL_METRICS_MAP 或前端 VITE_MODEL_METRICS_MAP 映射。
+状态与活动查询带 `?view=status`，支持轻量视图的后端可省略全部逐请求 results；不带该参数的接口保持完整结果兼容。当前 Benchmark 忽略参数也可用，但缺少 speed 时无法恢复真实倍速；前端不凭空显示 1×。任务标签应是实际 Prometheus 标签，目标 LiteLLM 别名使用前端 `VITE_REPLAY_MODEL_METRICS_MAP` 映射，正式历史档案别名单独用 `VITE_MODEL_METRICS_MAP`。不依赖当前 Benchmark 尚未实现的服务端映射配置。
 
-刷新先查询 active；无活动任务时再 GET 保存的最后 replay_id，避免任务刚结束而丢失曲线。404 清除失效任务线索，其他失败保留快照并禁用创建。获得 started_at 后重新查询从该时间到现在的指标，再恢复约 2 秒状态和 30 秒曲线轮询。完成任务继续保留 finished_at+30 秒图表范围与 finished_at+60 秒采集余量。
+刷新先查询 active；无活动任务时再 GET 保存的最后 replay_id，避免任务刚结束而丢失曲线。404 清除失效任务线索，其他失败保留快照并禁用创建。获得 started_at 后重新查询从该时间到现在的指标，再恢复约 2 秒状态和 30 秒曲线轮询。完成任务的图表尾部和停止轮询时刻按上述实际灰度采集间隔计算，默认 15 秒时分别为 finished_at+30 和 finished_at+60。
 
 浏览器 localStorage 仅保存非敏感快照、历史窗口、相对时间偏好与数据源；sessionStorage 保存待确认创建请求的参数、签名和幂等键。成功取得任务 ID 后清除待确认记录；创建冲突附带 active_task 时展示该任务。网络失败或响应丢失时保留原操作，用户重试原请求，同键同有效参数返回 200 原任务；新任务返回 202。参数指纹包含 source_model、target_model、start_time、end_time、speed；同键不同有效参数返回 409。正在观测已知任务的刷新过程不 POST 创建。
 

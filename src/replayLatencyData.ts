@@ -1,8 +1,9 @@
 import { isTerminalReplay } from './replay';
-import type { Metric, Metrics, Replay } from './types';
+import type { Metric, Metrics, Replay, TimeRange } from './types';
 
 export interface ReplayLatencyConfig { windowSeconds: number; scrapeSeconds: number }
 export interface ReplayLatencyWindow { evaluatedAt: number; windowSeconds: number; settleAfter?: number }
+export interface ReplayLoadWindow { range: TimeRange; settleAfter?: number }
 export type ReplayLatencyMetrics = { [Key in keyof Metrics]: Metric & { observedAt?: number } };
 
 export function createReplayLatencyConfig(env: Record<string, string | undefined>): ReplayLatencyConfig {
@@ -28,6 +29,17 @@ export function replayLatencyWindow(replay: Replay, now: number, config: ReplayL
     evaluatedAt,
     windowSeconds: Math.min(config.windowSeconds, elapsed),
     // 前端与常见指标代理有 30s 缓存；尾部评估时间固定后再留一轮缓存余量。
+    settleAfter: finalTime === undefined ? undefined : finalTime + 30,
+  };
+}
+
+/** 负载保留两次实际采集的尾部，之后再等待 30s 缓存余量。 */
+export function replayLoadWindow(replay: Replay, now: number, config: ReplayLatencyConfig): ReplayLoadWindow | undefined {
+  if (replay.startedAt === undefined) return;
+  const finalTime = isTerminalReplay(replay.status) && replay.finishedAt !== undefined
+    ? replay.finishedAt + 2 * config.scrapeSeconds : undefined;
+  return {
+    range: { start: replay.startedAt, end: finalTime ?? Math.max(replay.startedAt + 30, Math.floor(now)) },
     settleAfter: finalTime === undefined ? undefined : finalTime + 30,
   };
 }

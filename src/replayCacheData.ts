@@ -124,13 +124,14 @@ export function parseCacheResult(raw: unknown, key: CacheMetricKey, type: 'vecto
 
 export async function fetchReplayCache(replay: Replay, plan: CachePlan, config: ReplayCacheConfig, api: ApiConfig): Promise<CacheData> {
   const data = emptyCacheData();
+  const freshAfter = plan.settleAfter !== undefined && Date.now() / 1000 >= plan.settleAfter ? plan.settleAfter * 1000 : undefined;
   const queries = cacheQueries(replay, config);
   // 保留已有 Prometheus 缓存与去重；显式步长限制为约 300 点且不密于采集间隔。
   const fetchParsed = async (key: CacheMetricKey, query: string, range: TimeRange) => {
     const url = new URL(promPath(query, range, api), 'http://dashboard.local');
     const step = Math.max(config.scrapeSeconds, Math.ceil((range.end - range.start) / 300));
     url.searchParams.set('step', String(step));
-    return parseCacheResult(await requestPrometheus(url.pathname + url.search), key, 'matrix', plan.evaluatedAt, { ...range, step });
+    return parseCacheResult(await requestPrometheus(url.pathname + url.search, {freshAfter}), key, 'matrix', plan.evaluatedAt, { ...range, step });
   };
   // KV 只发趋势区间查询；卡片由该结果推导，与曲线严格一致，终态取全程峰值。
   const kvQuery = (async () => {

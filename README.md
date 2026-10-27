@@ -4,6 +4,122 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 
 右上角“中文 / EN”按钮切换中英文，默认中文并记住语言选择。界面、图例、任务状态和弹窗随语言切换；语言切换不重新查询指标、不重置模型/选区/回放任务，时间始终按 Asia/Shanghai 展示。上游返回的错误详情和模型名称保留原文。
 
+## 正式历史与灰度回放指标分离（2026-10-27）
+
+历史模型发现、左侧负载曲线和原有延迟卡片查询正式指标后端；回放负载、回放实时延迟、TTFT 趋势、缓存观测查询灰度 Prometheus。回放 Token 吞吐默认跟随灰度，也可独立配置为正式指标入口。目标模型在单个 Prometheus 内能唯一定位部署时，继续仅按真实 `model_name` 筛选，无需增加 namespace/environment/deployment。
+
+本次只改本仓库，不修改 Benchmark。`/api/models` 和 `/api/replays` 仍走原 Benchmark；新增同源 `/api/replay-prometheus/query`、`query_range` 由 Vite 或本项目容器 Nginx **直接**代理至灰度 Prometheus 的 `/api/v1/query`、`query_range`，原样保留 PromQL、start/end/step/time。支持 Prometheus 部署在 URL 子路径。浏览器不直接访问跨域 Prometheus，也不保存它的真实地址或凭据。
+
+在前端项目的 `.env.local`（本地）或 `.env`（Docker Compose）配置：
+
+```dotenv
+# 现有正式指标后端，保留原值；这里不是 Prometheus 地址。
+BACKEND_URL=http://<PROD_METRICS_BACKEND>:<PORT>
+# 现有 Benchmark 地址，保留原值。
+REPLAY_BACKEND_URL=http://<BENCHMARK_HOST>:<PORT>
+# 灰度 Prometheus 实际基地址；不追加 /api/v1/query。
+REPLAY_PROMETHEUS_URL=http://<GRAY_PROMETHEUS_HOST>:9090
+VITE_PROMETHEUS_API_PREFIX=/api/prometheus
+VITE_REPLAY_PROMETHEUS_API_PREFIX=/api/replay-prometheus
+# 正式历史档案别名、灰度目标别名分别映射；名称与指标一致时使用空对象。
+VITE_MODEL_METRICS_MAP='{}'
+VITE_REPLAY_MODEL_METRICS_MAP='{}'
+# 留空则吞吐查询灰度；LiteLLM 只被正式采集时填 /api/prometheus。
+VITE_REPLAY_THROUGHPUT_PROMETHEUS_API_PREFIX=
+# 灰度上游若需要 Bearer 认证，填原始 token，不加 Bearer；否则留空。
+REPLAY_PROMETHEUS_BEARER_TOKEN=
+```
+
+Prometheus 基地址须可由前端服务/容器访问；容器中的 localhost 指容器自身。`REPLAY_PROMETHEUS_URL` 和 `REPLAY_PROMETHEUS_BEARER_TOKEN` 是服务端变量，不能改成 `VITE_` 前缀。灰度代理清除浏览器提交的 Authorization/x-api-key/x-litellm-key，仅按独立的服务端 token 配置灰度上游认证；现有页面指标认证继续用于正式指标后端。
+
+本地修改后重启 `npm run dev`；Docker Compose 修改后执行 `docker compose up -d --build`，因为 `VITE_` 路径属于构建配置。如果仅更换灰度地址或 token，无需重新构建前端，可执行 `docker compose up -d` 重建容器配置。自行托管 dist 时，必须同时部署等价的 Nginx 路由；Vite 配置不会改变外部服务器。
+
+容器默认启用双指标入口；旧环境直接构建且未设置 `VITE_REPLAY_PROMETHEUS_API_PREFIX` 时保留单指标源兼容。若要在 Compose 中使用单源，显式设 `VITE_REPLAY_PROMETHEUS_API_PREFIX=/api/prometheus`，并清空 `REPLAY_PROMETHEUS_URL`。双源配置下灰度地址未填会明确返回 503；不自动回退正式指标源。前端缓存按完整 URL 隔离，限流按指标入口隔离，灰度 429 不阻断正式历史查询。刷新恢复的任务仍使用固定的回放入口和原任务时间。
+
+`VITE_PROMETHEUS_SCRAPE_INTERVAL_SECONDS` 用于回放观测，应填写灰度 vLLM 实际采集间隔；负载曲线终态尾部为两次采集间隔，之后再等待 30 秒缓存余量，并取得在余量结束后发起的成功查询才停止。吞吐可通过 `VITE_REPLAY_THROUGHPUT_CONFIG.scrapeSeconds` 单独配置。正式与灰度若实际指标名不同，需先统一当前使用的指标定义或另行扩展指标名配置；此次分流沿用现有指标表达式。
+
+再次审查修复（2026-10-27）：历史和目标别名改为分别配置，避免两边同名指标使灰度目标别名反向污染正式 `source_model`；刷新恢复历史也不借用灰度目标的指标标签。取消响应同样应用目标映射，避免终态改用 LiteLLM 别名而查不到尾部。负载补采随灰度采集间隔变化；负载、延迟和缓存都按请求发起时间判断是否能够停止，并在最终补采时绕过截止时间之前的前端缓存，避免慢查询或机器休眠造成提前停止。Vite 在配置灰度地址却遗漏回放路径时明确拒绝启动，避免页面仍静默使用正式入口。
+
+### Benchmark 对接与修改说明
+
+已按 `D:\ai_workspace\Benchmark` 当前代码复核，本次 Benchmark **代码修改清单为空，新增接口和配置均为零**，无需为指标分源重建或重启 Benchmark。它继续读取正式请求档案，经原 `LITELLM_URL` 向所选 `target_model` 发流；指标查询由看板服务直接代理，不经过 Benchmark。`REPLAY_PROMETHEUS_URL` 等新增配置全部放在本前端项目中。
+
+本次前端项目的修改位置：
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/apiConfig.ts`、`src/App.tsx` | 拆分历史、回放、LiteLLM 吞吐三份指标配置及历史/目标别名映射；历史恢复不借用目标标签，连接设置显示实际入口 |
+| `src/data.ts` | 按指标入口隔离 429 退避；原完整 URL 缓存继续区分正式和灰度 |
+| `src/replay.ts`、`src/useReplay.ts` | 创建、状态与取消响应统一使用目标别名映射 |
+| `src/replayLatencyData.ts`、`src/ReplayLatency.tsx`、`src/ReplayCache.tsx`、`src/replayCacheData.ts` | 补采尾部跟随实际采集间隔，最终查询按发起时间判断且绕过过早缓存 |
+| `vite.config.mjs` | 开发和预览增加灰度原生 API 代理；独立上游认证，缺少灰度地址返回 503 |
+| `docker/nginx/default.conf.template`、`docker/nginx/15-generate-default-conf.sh` | 生产容器增加两个灰度指标精确路由，保留查询参数；导出模板变量使启动脚本计算出的配置生效 |
+| `Dockerfile`、`docker-compose.yml`、`.env.example` | 增加构建/运行配置，Compose 同时传入前端模型别名映射；密钥与实际灰度地址仅在代理端使用 |
+| `tests/metrics-sources.test.ts`、`scripts/*metrics*-check.cjs`、`scripts/proxy-check.cjs` | 验证分源、缓存/限流隔离、路由改写、全部回放组件、恢复与失败行为 |
+
+| 现有 Benchmark 接口/字段 | 本次如何对接 |
+| --- | --- |
+| `GET /api/models` → `target_models: string[]` | 继续作为打流目标列表；当前服务从 LiteLLM `/v1/models` 读取，无需改为从 Prometheus 发现模型 |
+| `POST /api/replays` | 保持 `source_model`、`target_model`、`start_time`、`end_time`、`speed` 五字段请求及 `Idempotency-Key`；不增加环境、Prometheus 地址或目标 IP |
+| 创建响应的 `replay_id` | 用原任务 ID 继续查询状态，不额外创建观测任务 |
+| `GET /api/replays/{id}?view=status`、`GET /api/replays/active?view=status` | 保持状态查询与刷新恢复；当前后端忽略 `view=status`、返回完整结果也兼容，轻量化不是本次分源的前置条件 |
+| `started_at`、`finished_at` | 继续决定回放指标的真实时间窗口，与来源的历史时间区间分开 |
+| `target.metrics_labels.model_name` | 当前后端返回 `target_model`；与 vLLM 标签同名时直接使用，不同名时由下述前端配置映射 |
+| 任务 Bearer 认证 | 保持原认证方式；它与灰度 Prometheus 的上游认证分别配置 |
+
+正式请求档案和灰度模型路由都已配置可达时，原 Benchmark `.env` 保持不变。若目标列表缺少灰度模型，先检查它所连接的 LiteLLM 是否配置对应灰度路由；修改 Prometheus 查询地址不会改变打流去向，也不会给 Benchmark 增加可用模型。
+
+例如目标列表返回 `qwen-gray-service`，灰度 Prometheus 的实际 `model_name` 为 `Qwen3-32B-gray`，只需在前端配置：
+
+```dotenv
+VITE_REPLAY_MODEL_METRICS_MAP='{"qwen-gray-service":"Qwen3-32B-gray"}'
+```
+
+创建任务仍提交 `target_model: "qwen-gray-service"`，回放观测筛选 `model_name="Qwen3-32B-gray"`。映射在创建、轮询、取消和刷新恢复时均生效；Docker Compose 已传入对应构建参数，改后需重新构建。`VITE_MODEL_METRICS_MAP` 单独用于正式历史档案别名，不能把仅属于灰度的目标映射放入其中；多个灰度目标可映射到同一灰度指标名。留空或不配置 `VITE_REPLAY_MODEL_METRICS_MAP` 时继承旧的共享映射以兼容老部署，双源部署建议明确配置，目标与指标同名时填 `{}`。正式历史来源名已与档案一致时，历史映射同样填 `{}`。LiteLLM Token 吞吐使用独立的 `VITE_REPLAY_THROUGHPUT_CONFIG.targets` 映射，不自动使用 vLLM 的 `model_name`。
+
+如果服务器上实际运行的是更旧的 Benchmark，仅支持单个 `model_id`、不接受独立的 `source_model`/`target_model`，才需要补齐来源到目标的回放能力：在 `app/benchmark/api.py` 解析并保存双模型字段，将二者分别传给 `prepare_and_run`；在 `app/benchmark/core.py` 按来源检索档案、按目标发送请求；创建、状态及活动响应返回固定的双模型和时间区间，幂等指纹包含双模型。旧版调用可保留 `model_id` 同时作为来源与目标的兼容分支。当前提供的 Benchmark 已具备这些能力，因此本次没有执行此类修改，也不需要新增 Prometheus 接口。现有 README 中关于轻量状态、版本号等旧缺口说明不代表它们是本次改造的必需项。
+
+### 生产部署与对接验收
+
+使用本项目 Docker Compose 时，新增代理随镜像一起部署；自行托管 `dist/` 时，需要在已有 Nginx `server` 中增加下面两个精确路由，替换示例上游地址。保留原正式 `/api/prometheus/*` 和 Benchmark `/api/models`、`/api/replays/*` 路由。
+
+```nginx
+location = /api/replay-prometheus/query {
+    proxy_pass http://GRAY_PROMETHEUS_HOST:9090/api/v1/query;
+    proxy_http_version 1.1;
+    proxy_ssl_server_name on;
+    proxy_read_timeout 310s;
+    proxy_set_header Authorization "";
+    proxy_set_header x-api-key "";
+    proxy_set_header x-litellm-key "";
+}
+
+location = /api/replay-prometheus/query_range {
+    proxy_pass http://GRAY_PROMETHEUS_HOST:9090/api/v1/query_range;
+    proxy_http_version 1.1;
+    proxy_ssl_server_name on;
+    proxy_read_timeout 310s;
+    proxy_set_header Authorization "";
+    proxy_set_header x-api-key "";
+    proxy_set_header x-litellm-key "";
+}
+```
+
+这两个 `proxy_pass` 保留原查询参数。若灰度 Prometheus 需要 Bearer 认证，两个块中的 Authorization 改为服务端受控配置的 `Bearer <实际灰度凭据>`；不要填写 Benchmark 密钥。外部 Nginx 不会自动读取本项目 `.env`；使用本项目容器才会自动替换上游和凭据。配置完成后执行 `nginx -t` 并重新加载；本项目容器可用 `docker compose exec dashboard nginx -t` 检查。
+
+1. 从看板服务所在机器/容器确认能访问灰度 Prometheus；浏览器只需要访问看板同源地址。
+2. 检查正式 `/api/prometheus/query` 和灰度 `/api/replay-prometheus/query`：用 `count by (model_name) (vllm:num_requests_running)` 确认分别返回预期模型。两边存在部分同名模型正常，单个入口内的目标部署须明确。
+3. 页面连接设置应显示历史入口 `/api/prometheus`、回放入口 `/api/replay-prometheus`；Token 吞吐入口按实际 LiteLLM 采集位置配置。
+4. 创建回放后在浏览器 Network 确认：任务仍发往 Benchmark 的同源路由，历史负载和原有延迟卡查正式入口，回放负载、五项回放延迟、TTFT 趋势和缓存查灰度入口；回放查询使用任务的实际起止时间。
+5. 刷新页面，确认恢复同一任务，右侧继续查灰度，切换左侧模型不改变右侧目标。Token 吞吐应查询实际采集它的指标源。
+6. 灰度返回错误时，应在回放区域显示错误，正式历史仍能查询；不会把正式指标作为灰度结果展示。回放刚开始时延迟/趋势可能等待足够的采样窗口，空结果不代表任务未发流。
+
+需要回退为旧单源模式时，将 `VITE_REPLAY_PROMETHEUS_API_PREFIX=/api/prometheus`，清空 `REPLAY_PROMETHEUS_URL` 和 `VITE_REPLAY_THROUGHPUT_PROMETHEUS_API_PREFIX`，重新构建部署前端即可；Benchmark 继续使用原配置。
+
+验证：`npm test`、`npm run build`、`node scripts/proxy-check.cjs`、`node scripts/nginx-metrics-check.cjs`、`node scripts/metrics-sources-check.cjs`。代理测试仅访问本机模拟上游；浏览器测试构建独立产物并拦截全部 API，覆盖同名模型分源、全部回放观测、原五字段请求、刷新恢复、灰度失败无回退、凭据不进入产物及 320px 布局，不发送实际回放流量。当前 Windows 环境无 Docker/Nginx，已验证启动脚本生成的配置，尚未运行容器内 `nginx -t` 或真实双环境联调。
+
+本次审查结果：87 项单元测试、生产构建、代理与 Nginx 配置生成检查通过；浏览器补充验证独立的历史/灰度目标别名、同名指标、无本地快照的活动恢复、60 秒灰度采集和查询途中系统时间跳变，确认最终观测会重新补查。Benchmark 工作目录保持无改动。
+
 ## 来源模型与打流目标分离（2026-10-26）
 
 新建回放不再发送单个 `model_id`，改为 `source_model`、`target_model`、`start_time`、`end_time`、`speed` 五个字段。当前“查询模型”下拉框仍决定历史来源；在左侧回放时间区域点击新增的“选择目标”按钮，从 Benchmark 的 `GET /api/models` 响应 `target_models` 中选择要打流的 LiteLLM 模型。列表支持搜索、刷新、错误重试和空列表提示，加载列表失败或没有有效目标时不能开始回放。演示模式使用本地演示模型列表。
@@ -20,11 +136,11 @@ React + TypeScript + ECharts 前端。默认演示模式；演示曲线和回放
 
 来源默认取下拉框选中值；配置了唯一的 `VITE_MODEL_METRICS_MAP` 别名时，沿用原有 `replayModelId || model.id` 逻辑提交档案模型名。目标严格使用 `target_models` 返回的模型 ID，可与来源相同。Benchmark 已原生接受 `source_model` / `target_model`，按来源检索 SpendLogs/JSONL 并将请求发送到目标，本次无需修改 Benchmark。
 
-确认弹窗分别展示来源和目标，右侧以“来源 → 目标”展示固定的任务上下文。切换查询模型不会改变已有任务；回放负载、实时延迟、历史趋势和缓存观测都使用目标指标标签，LiteLLM 吞吐映射按 `target_model` 查找。后端返回的 `target.metrics_labels` 优先；当前 Benchmark 将目标别名直接返回为 `model_name` 时，可用 `VITE_MODEL_METRICS_MAP` 映射到实际 vLLM 标签。
+确认弹窗分别展示来源和目标，右侧以“来源 → 目标”展示固定的任务上下文。切换查询模型不会改变已有任务；回放负载、实时延迟、历史趋势和缓存观测都使用目标指标标签，LiteLLM 吞吐映射按 `target_model` 查找。后端返回的 `target.metrics_labels` 优先；当前 Benchmark 将目标别名直接返回为 `model_name` 时，使用 `VITE_REPLAY_MODEL_METRICS_MAP` 映射到实际 vLLM 标签；未配置时兼容旧的共享映射。
 
 新任务快照保存来源显示名及来源指标名，刷新后分别恢复历史与目标观测。旧任务响应中的 `model_id` 继续兼容读取；旧的待确认创建请求保留其原始请求体、签名和幂等键，重试时不自动转换字段。新建请求的来源和目标都进入幂等签名。保存的目标偏好需重新打开选择器核对最新可用列表后才能用于新建任务。
 
-Vite 开发/预览与容器 Nginx 均将 `/api/models` 分流到 `REPLAY_BACKEND_URL`，未配置时回落 `BACKEND_URL`；Prometheus 接口继续走指标后端。模型列表按当前 Benchmark 契约不携带回放/指标凭据，`proxy` 认证注入仍只用于回放任务路由。自行维护生产反向代理时，同样需要增加 `/api/models` 到 Benchmark 的精确路由。
+Vite 开发/预览与容器 Nginx 均将 `/api/models` 分流到 `REPLAY_BACKEND_URL`，未配置时回落 `BACKEND_URL`；正式指标继续走指标后端，灰度指标按上节直连代理配置。模型列表按当前 Benchmark 契约不携带回放/指标凭据，`proxy` 认证注入仍只用于回放任务路由。自行维护生产反向代理时，同样需要增加 `/api/models` 到 Benchmark 的精确路由。
 
 主要改动：`src/App.tsx`（目标选择与双模型请求/展示）、`src/data.ts`（目标列表校验和请求）、`src/replay.ts` / `src/replayStorage.ts`（恢复与旧记录兼容）、`src/types.ts`、`src/i18n.ts`、`src/styles.css`，以及 Vite/Nginx 分流配置。接口说明见 [流量回放接口文档](docs/replay-api.md)。
 
@@ -41,21 +157,21 @@ Vite 开发/预览与容器 Nginx 均将 `/api/models` 分流到 `REPLAY_BACKEND
 ## 数据来源与流向
 
 ```text
-模型列表：vLLM /metrics → Prometheus
+模型列表：正式 vLLM /metrics → 正式 Prometheus
         → 看板后端 /api/prometheus/query（count by (model_name)）
         → data.ts / fetchModels / parseModelVector → App.models → 模型下拉框
 
-历史曲线：vLLM /metrics → Prometheus → 看板后端 /api/prometheus/query_range
+历史曲线：正式 vLLM /metrics → 正式 Prometheus → 看板后端 /api/prometheus/query_range
                       → data.ts / parseMatrix → App.history → 左侧 LoadChart
 
-即时卡片：Prometheus → 看板后端 /api/prometheus/query
+即时卡片：正式 Prometheus → 看板后端 /api/prometheus/query
                    → data.ts / parseLatencyVector → App.metrics → TTFT/E2E/ITL/TPOT/QT 五张卡
 
-回放延迟：回放任务的实际时间、目标模型与部署标签 → 同一 /api/prometheus/query
+回放延迟：任务实际时间、目标模型标签 → /api/replay-prometheus/query → 灰度 Prometheus
         → ReplayLatency → 独立五张回放实时延迟卡片（短窗口，每 30s 更新）
         → ReplayTrend → 首 Token 延迟历史趋势（完整 rate 窗口，每 30s 更新）
 
-回放缓存：同一任务的时间、目标标签 → query + query_range
+回放缓存：同一任务的时间、目标标签 → /api/replay-prometheus/query_range → 灰度 Prometheus
         → replayCacheData / ReplayCache / CacheTrend → 三张卡片与三张趋势图
 
 创建回放：左侧刷选 / 时间输入 → App.selection
@@ -64,9 +180,11 @@ Vite 开发/预览与容器 Nginx 均将 `/api/models` 分流到 `REPLAY_BACKEND
         → 后端检索来源档案并向所选目标发送 → 返回 replay_id → App.replay
 
 回放观测：GET /api/replays/{id} → 实际开始/结束时间、状态、目标指标标签
-        → data.ts / fetchLoad → 同一 query_range 接口
+        → data.ts / fetchLoad → /api/replay-prometheus/query_range → 灰度 Prometheus
         → App.replayData → 右侧 LoadChart
 ```
+
+以上按双源模式展示；未配置独立回放前缀的旧单源模式仍使用 `/api/prometheus`。
 
 请求 ID 和完整请求内容不经过折线组件；任务完成由后端状态接口决定，不能从曲线是否归零推断。模型下拉框切换只影响左侧查询，右侧任务使用创建时固定的模型。所有接口时间使用 Unix 秒，图表绝对轴转换为毫秒，相对轴转换为距实际开始时间的秒数。
 
@@ -327,7 +445,7 @@ BACKEND_PROXY_DEBUG=true
 VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 ```
 
-此时下拉框显示 `Qwen/Qwen3-32B-v2`，历史指标也筛选该名称，回放请求提交 `source_model: "qwen-service"`。目标仍由按钮独立选择，映射同时可用于目标别名到真实指标名的转换；多个别名对应同一来源指标名时，仍需唯一确定历史档案别名。连接设置显示历史 model_name、source_model 和 target_model。
+此时下拉框显示 `Qwen/Qwen3-32B-v2`，历史指标也筛选该名称，回放请求提交 `source_model: "qwen-service"`。目标仍由按钮独立选择，目标别名到灰度指标名使用 `VITE_REPLAY_MODEL_METRICS_MAP` 单独配置；未配置时兼容旧的共享映射。多个别名对应同一来源指标名时，仍需唯一确定历史档案别名。连接设置显示历史 model_name、source_model 和 target_model。
 
 路由成功但指标为空时，再核对 vLLM 是否已被采集、时间范围、实际指标名和模型标签。五张延迟卡片的 rate 窗口跟随历史查询范围；若 scrape interval 大于所选窗口或窗口内没有请求，Prometheus 可能返回空结果或 `NaN`。这些问题与 `API route not found` 是不同层次。
 
@@ -351,7 +469,7 @@ VITE_MODEL_METRICS_MAP='{"qwen-service":"Qwen/Qwen3-32B-v2"}'
 | 独立回放地址未配置 | 前端 `.env.local` 仅设置 `BACKEND_URL=http://127.0.0.1:3000`，未设置 `REPLAY_BACKEND_URL`，因此回放请求也发往 3000。 | 将 `REPLAY_BACKEND_URL` 设置为 Vite/生产代理能够访问的 Benchmark 地址；指标继续使用原 `BACKEND_URL`。 |
 | 任务响应缺少 `revision` | Benchmark 已原样返回创建时的数字倍速或 `"burst"`，但公共响应没有递增版本号；前端不能按版本号拒绝迟到的旧响应。 | 将兼容补丁中的任务版本能力移植到当前 Benchmark。 |
 | `view=status` 未提供轻量响应 | 活动/状态接口忽略该参数，隔离验证中两者均返回注入的全部 1,000 条 `results`；约每 2 秒的轮询会反复下载结果文本，任务越大响应越重。 | 移植兼容补丁中的轻量响应能力，使 `?view=status` 省略 `results`，保留原完整查询接口。 |
-| 后端实际指标标签映射未实现 | 公共响应直接用目标模型名作为 `model_name`；隔离验证配置 `BENCHMARK_MODEL_METRICS_MAP={"alias":"real-model"}` 后仍返回 alias。LiteLLM 别名与指标名不同时，未配置映射的曲线查询可能为空。 | 当前可配置前端一对一 `VITE_MODEL_METRICS_MAP`；或移植后端映射能力，由任务返回实际指标标签。 |
+| 后端实际指标标签映射未实现 | 公共响应直接用目标模型名作为 `model_name`；隔离验证配置 `BENCHMARK_MODEL_METRICS_MAP={"alias":"real-model"}` 后仍返回 alias。LiteLLM 别名与指标名不同时，未配置映射的曲线查询可能为空。 | 当前可配置前端 `VITE_REPLAY_MODEL_METRICS_MAP`，正式历史单独用 `VITE_MODEL_METRICS_MAP`；无需为本次分源修改后端。 |
 | 取消与调度提交存在竞态 | `app/benchmark/core.py` 在取消检查和线程池提交之间未使用同一把锁；在该间隙插入真实 HTTP 取消后，接口已返回 202/cancelling，调度线程仍提交了一个请求。状态更新也缺少取消中/终态保护。 | 移植兼容补丁中的原子提交与状态保护，使取消受理与提交共用锁；已提交的请求仍等待处理结束。 |
 | 没有暂停/继续接口 | 隔离验证中 `/pause`、`/resume` 均返回 404，任务没有暂停能力字段。前端已移除暂停/继续按钮，不再调用这两条接口。 | 参考 [暂停补丁](integration/benchmark-pause.patch) 移植接口与调度能力，不能直接套用旧补丁。 |
 | burst 未及时进入 draining | `run_replay` 的突发循环等待所有在途请求结束后才退出；隔离验证中 total=2、sent=2、completed=0 时仍返回 running，`dispatch_finished` 尚未置位。前端会继续显示“回放中”，通常观察不到独立的等待响应阶段。 | 最后一个请求提交后即设置 draining/dispatch_finished，再等待在途响应；终态仍以全部处理结束为准。 |
@@ -415,7 +533,7 @@ Benchmark 不提供 `/api/prometheus/query` 和 `/api/prometheus/query_range`，
 | --- | --- |
 | `query` | 下方 PromQL；任务提供其他部署标签时，一并加入筛选条件。 |
 | `start` | 任务实际打流开始时间 `started_at`，Unix 秒。 |
-| `end` | 运行中为 `max(started_at + 30, 当前 Unix 秒)`；结束后为 `finished_at + 30`。 |
+| `end` | 运行中为 `max(started_at + 30, 当前 Unix 秒)`；终态为 `finished_at + 2 × 灰度采集间隔`，默认间隔 15 秒时即 `finished_at + 30`。 |
 | `step` | `max(5, ceil((end-start)/60))`，单位秒，约 60 个采样点。 |
 
 ```promql
@@ -423,7 +541,7 @@ sum by (model_name) (vllm:num_requests_running{model_name="实际指标模型名
 sum by (model_name) (vllm:num_requests_waiting{model_name="实际指标模型名"})
 ```
 
-这里恢复的是从实际开始时间到当前查询终点的整段指标，而不是只查询刷新后的新点。任务结束后，前端在当前时间超过 `finished_at + 60` 且当轮两条查询均无错误时停止曲线轮询。曲线能否完整恢复取决于任务接口返回的时间和标签是否正确，以及 Prometheus 是否仍保留相应时段的数据；共享实例的指标也可能包含其他流量。完整任务响应契约见 [回放接口文档](docs/replay-api.md)。
+这里恢复的是从实际开始时间到当前查询终点的整段指标，而不是只查询刷新后的新点。任务结束后，在 `finished_at + 2 × 灰度采集间隔 + 30 秒缓存余量` 之后发起的一轮查询成功时停止曲线轮询；最终轮次绕过此前的前端缓存，休眠或慢响应不能让过早发起的查询满足停止条件。曲线能否完整恢复取决于任务接口返回的时间和标签是否正确，以及 Prometheus 是否仍保留相应时段的数据；共享实例的指标也可能包含其他流量。完整任务响应契约见 [回放接口文档](docs/replay-api.md)。
 
 取消按钮仅在 `cancellable=true` 启用。`202` 进入 cancelling 后继续更新；`409 + task` 更新实际终态。旧轮询响应不能撤销取消或降低计数。已经提交给工作线程的请求仍可完成，进度不强制填满。
 

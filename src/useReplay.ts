@@ -103,9 +103,7 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
         } else raw=await request(lightweight(taskPath(paths.status,id)),{},authRef.current);
         const latest=replayRef.current;
         if(!live||epoch.current!==token||latest?.id!==id)return;
-        const task=applyReplayResponse(raw,latest);
-        // 兼容旧后端别名标签，并保留创建/恢复时的正确指标上下文。
-        if(task.metricsLabels?.model_name===task.modelId && metricsMap[task.modelId])task.metricsLabels={...task.metricsLabels,model_name:metricsMap[task.modelId]};
+        const task=applyReplayResponse(raw,latest,undefined,metricsMap);
         setTask(task);failures=0;backoffUntil=0;
       }catch(e){
         if(!live||epoch.current!==token||replayRef.current?.id!==id)return;
@@ -162,12 +160,12 @@ export function useReplay({mode,auth,authReady,scope,paths,metricsMap}:{mode:'de
     cancelBusy.current=true;setCancelling(true);setActionError('');const token=++epoch.current;
     try{
       const raw=mode==='demo'?{status:'cancelling',cancellable:false,cancel_requested_at:Date.now()/1000}:await request(taskPath(paths.cancel,task.id),{method:'POST'},authRef.current);
-      if(epoch.current===token&&replayRef.current?.id===task.id)setTask(applyReplayResponse(raw,replayRef.current));
+      if(epoch.current===token&&replayRef.current?.id===task.id)setTask(applyReplayResponse(raw,replayRef.current,undefined,metricsMap));
     }catch(e){
       if(epoch.current!==token||replayRef.current?.id!==task.id)return;
       if(e instanceof ApiError&&e.status===409&&e.payload?.task){
         try {
-          setTask(applyReplayResponse(e.payload.task,replayRef.current));
+          setTask(applyReplayResponse(e.payload.task,replayRef.current,undefined,metricsMap));
           if(!isTerminalReplay(replayRef.current!.status))setActionError(`取消回放失败：${e.message}`);
         } catch(error) {setActionError(`取消回放失败：${(error as Error).message}`);}
       }else setActionError(`取消回放失败：${(e as Error).message}`);

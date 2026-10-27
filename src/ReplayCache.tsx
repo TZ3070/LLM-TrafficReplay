@@ -34,7 +34,8 @@ export default function ReplayCache({ replay, mode, api, config, language, refre
     const load = async () => {
       const task = taskRef.current;
       if (!live || busy || done || document.hidden || task?.id !== replay.id) return;
-      const nextPlan = replayCachePlan(task, Date.now() / 1000, observationConfig);
+      const requestedAt = Date.now() / 1000;
+      const nextPlan = replayCachePlan(task, requestedAt, observationConfig);
       if (!nextPlan) {
         // started_at 可带小数；等到首个可查询整秒，不额外等待下一轮 30s 刷新。
         clearTimeout(startTimer);
@@ -47,7 +48,7 @@ export default function ReplayCache({ replay, mode, api, config, language, refre
         const next = mode === 'demo' ? demoReplayCache(nextPlan, observationConfig) : await fetchReplayCache(task, nextPlan, observationConfig, api);
         if (!live) return;
         setData(previous => retainReplayCache(previous, next));
-        if (nextPlan.settleAfter !== undefined && Date.now() / 1000 >= nextPlan.settleAfter && Object.values(next).every(item => !item.current.error && !item.trend.error)) { done = true; setSettled(true); }
+        if (nextPlan.settleAfter !== undefined && requestedAt >= nextPlan.settleAfter && Object.values(next).every(item => !item.current.error && !item.trend.error)) { done = true; setSettled(true); }
       } catch (error) {
         if (live) {
           const failed = emptyCacheData();

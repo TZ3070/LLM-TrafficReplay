@@ -1,6 +1,6 @@
 # 此模板由容器启动脚本 docker/nginx/15-generate-default-conf.sh 经 envsubst 生成到
-# /etc/nginx/conf.d/default.conf。仅替换四个占位符：后端地址、回放后端地址、
-# 回放路径正则、认证指令行；nginx 运行时变量（$uri、$host 等）由显式变量列表保护，保持原样。
+# /etc/nginx/conf.d/default.conf。仅替换明确列出的占位符；
+# nginx 运行时变量（$uri、$host 等）由显式变量列表保护，保持原样。
 # 语义对齐 vite.config.mjs 的 createBackendProxy：无路径改写、回放路径优先分流、
 # proxy 认证模式仅对回放路由注入 Bearer 密钥。
 
@@ -28,6 +28,9 @@ server {
     location = /index.html {
         add_header Cache-Control "no-cache";
     }
+
+    # 灰度指标直连 Prometheus；由启动脚本生成两个精确路由或明确的 503。
+    ${REPLAY_PROMETHEUS_LOCATIONS}
 
     # Benchmark's available LiteLLM targets share the replay backend.
     location = /api/models {
