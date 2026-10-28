@@ -1,0 +1,40 @@
+const { chromium } = require('@playwright/test');
+const path = require('path');
+const assert = require('assert');
+(async()=>{
+  const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
+  const page=await browser.newPage({viewport:{width:1440,height:1120}});
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('http://127.0.0.1:4173');
+  await page.getByRole('button',{name:'选择打流目标',exact:true}).click();
+  await page.getByRole('button',{name:'Qwen3-32B',exact:true}).click();
+  // “延迟数据”与“回放实时延迟”两区渲染相同卡片标题，需限定区域避免严格模式多元素命中。
+  await page.getByRole('region',{name:'延迟数据'}).getByText('首 TOKEN 延迟',{exact:true}).waitFor();
+  await page.waitForTimeout(1000);
+  const chart=page.locator('.load-chart').first();
+  const box=await chart.boundingBox();
+  await page.mouse.move(box.x+box.width*.32,box.y+110);
+  await page.mouse.down();
+  await page.mouse.move(box.x+box.width*.65,box.y+110,{steps:12});
+  await page.mouse.up();
+  await page.getByRole('button',{name:'确认回放',exact:true}).waitFor();
+  assert(await page.getByRole('button',{name:'确认回放',exact:true}).isEnabled(),'drag must enable replay');
+  await page.screenshot({path:path.resolve('preview.png'),fullPage:true});
+  await page.getByRole('button',{name:'确认回放',exact:true}).click();
+  await page.getByRole('button',{name:'开始回放',exact:true}).click();
+  // badge 与缓存观测区都会显示状态文字，限定到回放面板的 badge。
+  await page.locator('.replay-panel .badge').getByText('回放中',{exact:true}).waitFor();
+  await page.waitForTimeout(1000);
+  await page.locator('#model').selectOption('Llama-3.3-70B');
+  await page.waitForTimeout(300);
+  assert((await page.locator('.replay-panel .panel-model strong').innerText())==='Qwen3-32B → Qwen3-32B','replay must retain its source and target');
+  assert(await page.locator('.selection-form input').first().inputValue()==='','model switching must clear selection');
+  await page.screenshot({path:path.resolve('replay-preview.png'),fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await page.waitForTimeout(300);
+  const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth);
+  assert(!overflow,'mobile must not overflow');
+  assert.deepEqual(errors,[]);
+  console.log('PASS: render, drag selection, replay start, pinned replay model, model-change clearing, mobile layout, no runtime errors');
+  await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

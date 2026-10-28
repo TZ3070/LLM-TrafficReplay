@@ -1,0 +1,28 @@
+# 本地密钥与环境文件不进入构建；Vite 的 loadEnv 会读取 .env.*，可能污染构建变量。
+.env
+.env.*
+
+# 依赖与构建产物在容器内重新生成。
+node_modules
+dist
+
+# 版本库与开发工具文件不参与构建。
+.git
+.gitattributes
+.gitignore
+test-results
+playwright-report
+tests
+scripts
+docs
+integration
+preview.png
+replay-preview.png
+*.log
+*.tsbuildinfo
+
+# 部署配置本身不进入构建上下文。
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md

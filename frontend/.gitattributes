@@ -1,0 +1,5 @@
+# Unified diffs use a single space to mark an empty context line.
+/integration/benchmark-replay.patch whitespace=-blank-at-eol
+/integration/benchmark-pause.patch whitespace=-blank-at-eol
+# 容器内 shell 脚本必须保持 LF 行尾；CRLF 会让 /bin/sh 报错。
+docker/nginx/*.sh text eol=lf
