@@ -282,7 +282,7 @@ scripts/test.cjs 支持 npm test；浏览器检查脚本目前默认使用 Windo
 
 将 `.env.example` 复制为 `.env.local`，配置 `BACKEND_URL=http://<BACKEND_IP>:<BACKEND_PORT>`，重启服务。独立 Benchmark 可另外配置 `REPLAY_BACKEND_URL`；Vite 开发和预览会优先将创建/状态路径转发给 Benchmark，其余 `/api` 请求仍走已有看板后端，自定义回放路径也支持分流。回放认证值在右上角设置中输入，只保存在内存中。静态生产部署需在反向代理中配置相同的路径分流；这两个地址仅用于本地代理，不进入浏览器构建产物。
 
-任务创建响应会立即显示进度，活动任务在每次状态响应结束后约 2 秒再次查询；查询失败时保留上次计数和更新时间，并按 5、10、20、30 秒退避，429 按 Retry-After 退避，未提供时等待 60 秒。页面隐藏时暂停，恢复前台后立即尝试刷新；终态立即停止状态轮询。右侧曲线独立每 30 秒刷新，较慢的指标查询不会阻塞进度。
+任务创建响应会立即显示进度，活动任务在每次状态响应结束后约 2 秒再次查询；查询失败时保留上次计数和更新时间，并按 5、10、20、30 秒退避，429 按 Retry-After 退避，未提供时等待 60 秒。页面隐藏时暂停，恢复前台后立即尝试刷新；终态立即停止状态轮询。右侧负载曲线独立每 2 秒刷新，查询步长为 1 秒，最多显示最近 15 分钟，并绕过前端旧结果缓存，较慢的指标查询不会阻塞进度。
 
 回放观测的模型名称下方显示“已完成 / 总请求”、百分比和进度条，以及已发送、失败、跳过数量与最近成功接收时间。计数优先读取 `progress.total/completed/sent`，兼容顶层 `request_count/completed_count/sent_count`。总数未知时显示统计中，已知但尚未打流时显示 `0 / 总数`；没有可回放请求时不将 `0 / 0` 显示为 100%。已完成包含处理结束的失败请求，100% 不代表全部成功；任务结果以终态为准。
 
@@ -587,3 +587,10 @@ BENCHMARK_API_KEY=实际Benchmark密钥
 当前 Benchmark 已原生返回数字或 burst 的 `speed`；递增 `revision`、轻量状态、取消与提交的原子互斥、后端 `BENCHMARK_MODEL_METRICS_MAP` 仍需按当前代码移植，旧兼容补丁仅作为参考。具体影响见“当前 Benchmark 对接检查与缺口”。浏览器刷新不停止后端任务；Benchmark 进程重启仍会使活动任务失败，未增加断点续跑。
 
 验证命令：`npm run build`、`npm test`、`node scripts/replay-recovery-check.cjs`、`node scripts/replay-edge-check.cjs`、`node scripts/replay-progress-check.cjs`、`node scripts/proxy-check.cjs`。浏览器检查默认使用本地 4173 预览服务。后端隔离验证：`python scripts/benchmark-replay-check.py D:/ai_workspace/Benchmark`，只使用临时任务库和本地模拟请求，不访问真实模型。
+
+
+### 实时回放负载曲线
+
+回放负载图每 2 秒查询一次，查询步长为 1 秒，显示从实际开始到当前的最近 15 分钟。每轮强制读取新的前端查询结果；请求未完成时跳过下一轮，页面隐藏时暂停，返回前台立即补查。只有一个有效样本时显示点；空结果显示等待采集或检查模型标签的提示，查询错误单独显示，真实的零负载仍绘制为 0。
+
+Prometheus 已配置为 1 秒采集时，将构建环境的 `VITE_PROMETHEUS_SCRAPE_INTERVAL_SECONDS` 同步设为 `1`；该值仅用于前端观测等待，不会修改 Prometheus 服务端。结束后的负载图仍保留两次采集尾部及 30 秒代理缓存余量，最后一次成功查询后停止。历史图、延迟卡和其他回放指标保持各自现有刷新周期。

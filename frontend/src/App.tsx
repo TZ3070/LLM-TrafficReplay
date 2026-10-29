@@ -178,7 +178,7 @@ export default function App() {
     return()=>{live=false;clearInterval(timer);document.removeEventListener('visibilitychange',visible);};
   // 选区固定历史窗口，不将 range 放入依赖引起重复请求。
   },[modelMode,modelId,seconds,historyEnd,refreshToken]);
-  // 曲线使用实际时间与目标标签，独立保持 30s 刷新及结束后的采集余量。
+  // 曲线使用实际时间与目标标签，独立保持 2s 刷新及结束后的采集余量。
   useEffect(()=>{setReplayRange(undefined);setReplayData(EMPTY);},[replay?.id,replay?.startedAt,replay?.metricsName,replayLabelsKey]);
   useEffect(()=>{
     if(!replay||replay.startedAt===undefined)return;
@@ -192,7 +192,7 @@ export default function App() {
         const plan=replayLoadWindow(current,requestedAt,REPLAY_LATENCY)!;
         const window=plan.range;
         // 与历史图共用解析，但指标源、标签和实际时间独立于历史查询。
-        const data=await fetchLoad(current.metricsName,window,current.metricsLabels,REPLAY_API,{freshAfter:plan.settleAfter!==undefined&&requestedAt>=plan.settleAfter?plan.settleAfter*1000:undefined});
+        const data=await fetchLoad(current.metricsName,window,current.metricsLabels,REPLAY_API,{step:1,freshAfter:requestedAt*1000});
         if(live&&replayRef.current?.id===id){setReplayRange(window);setReplayData(previous=>retainFailedLoad(previous,data));}
         // 后端报告完成后再等待采集/缓存延迟，并在一次无查询错误的结果后停止轮询。
         // 这是前端刷新停止条件，不证明档案完整，也不是通过折线推断任务成功。
@@ -200,7 +200,7 @@ export default function App() {
       }catch(e){if(live&&replayRef.current?.id===id)setReplayData(data=>({...data,errors:[(e as Error).message]}));}finally{busy=false;}
     };
     const visible=()=>{if(!document.hidden)void load();};
-    void load();const timer=setInterval(()=>void load(),30000);
+    void load();const timer=setInterval(()=>void load(),2000);
     document.addEventListener('visibilitychange',visible);
     return()=>{live=false;clearInterval(timer);document.removeEventListener('visibilitychange',visible);};
   },[replay?.id,replay?.startedAt,replay?.finishedAt,replay?.metricsName,replayLabelsKey,refreshToken]);
@@ -278,6 +278,7 @@ export default function App() {
             {replay&&<>
               <ReplayProgress replay={replay} language={language}/>
               <div className="chart-toolbar"><span className="legend"><i className="purple"/>{t('正在处理')}<i className="teal"/>{t('等待处理')}</span><label className="relative"><input type="checkbox" checked={relative} onChange={e=>setRelative(e.target.checked)}/>{t('相对时间')}{relative&&replayRange?t('（{unit}）',{unit:relativeTimeUnit(replayRange.end-replayRange.start,language)}):''}</label></div>
+              {replayRange&&replayRange.start>replay.startedAt!&&<div className="replay-caption">{t('实时曲线显示最近 15 分钟')}</div>}
               {replayRange?<LoadChart language={language} data={replayData} range={replayRange} relativeOrigin={relative?replay.startedAt:undefined} max={sharedMax}/>:<div className="waiting-replay">
                 {!isTerminalReplay(replay.status)&&<LoaderCircle size={24} className="spin"/>}
                 <p>{replay.startedAt!==undefined?t('等待回放指标'):replay.requestCount===0?t('此选区没有可回放请求'):isTerminalReplay(replay.status)?t('任务已结束，未开始打流'):replay.requestCount!==undefined?t('已准备 {count} 个请求 · 等待实际打流开始',{count:formatValue(replay.requestCount,0,language)}):t('正在准备请求，统计总数')}</p>

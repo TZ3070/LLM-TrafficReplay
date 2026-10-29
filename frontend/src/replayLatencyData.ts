@@ -33,13 +33,14 @@ export function replayLatencyWindow(replay: Replay, now: number, config: ReplayL
   };
 }
 
-/** 负载保留两次实际采集的尾部，之后再等待 30s 缓存余量。 */
+/** 实时负载最多查询最近 15 分钟；保留两次采集尾部和代理缓存余量。 */
 export function replayLoadWindow(replay: Replay, now: number, config: ReplayLatencyConfig): ReplayLoadWindow | undefined {
   if (replay.startedAt === undefined) return;
   const finalTime = isTerminalReplay(replay.status) && replay.finishedAt !== undefined
     ? replay.finishedAt + 2 * config.scrapeSeconds : undefined;
+  const end = finalTime ?? Math.max(replay.startedAt + 1, Math.floor(now));
   return {
-    range: { start: replay.startedAt, end: finalTime ?? Math.max(replay.startedAt + 30, Math.floor(now)) },
+    range: { start: Math.max(replay.startedAt, end - 900), end },
     settleAfter: finalTime === undefined ? undefined : finalTime + 30,
   };
 }

@@ -57,7 +57,7 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
       name: `${t(grid === 0 ? '正在处理' : '等待处理')} · ${s.name}`,
       type: 'line' as const,
       xAxisIndex: grid, yAxisIndex: grid,
-      showSymbol: false, symbolSize: 5, connectNulls: false,
+      showSymbol: s.points.filter(p => p.value !== undefined && Number.isFinite(p.value)).length === 1, symbolSize: 5, connectNulls: false,
       lineStyle: { width: 2.2, color: grid === 0 ? colors[i % colors.length] : colors[(i + 1) % colors.length] },
       itemStyle: { color: grid === 0 ? colors[i % colors.length] : colors[(i + 1) % colors.length] },
       areaStyle: { opacity: .055 },
@@ -67,6 +67,12 @@ export default function LoadChart({ data, range, selection, onSelect, selectable
     })));
     instance.setOption({
       animation: false,
+      graphic: selectable ? [] : groups.flatMap((group, grid) => {
+        if (group.some(s => s.points.some(p => p.value !== undefined && Number.isFinite(p.value)))) return [];
+        const failed = data.failedQueries?.includes(grid === 0 ? 'running' : 'waiting') || (!data.failedQueries?.length && data.errors.length > 0);
+        return [{ type: 'text' as const, left: 'center', top: grid === 0 ? 110 : 326, silent: true,
+          style: { text: t(failed ? '指标查询失败，请查看错误详情' : '暂无采样，等待采集或检查模型标签'), fill: '#8b95a7', fontSize: 11 } }];
+      }),
       textStyle: { fontFamily:'Inter, system-ui, sans-serif' },
       toolbox: selectable ? {feature:{brush:{type:['lineX','clear'],title:{lineX:t('横向选择'),clear:t('清除选择')}}}} : undefined,
       title: [

@@ -286,20 +286,20 @@ async function performRequest(path: string, options: RequestInit = {}, auth?: Cl
   } finally { clearTimeout(timeout); }
 }
 // 前缀来自环境配置；URLSearchParams 编码 PromQL，不改变其聚合语义。
-export function promPath(query: string, range?: TimeRange, config = DEFAULT_API_CONFIG): string {
+export function promPath(query: string, range?: TimeRange, config = DEFAULT_API_CONFIG, step?: number): string {
   const params = new URLSearchParams({ query });
   if (range) {
     params.set('start', String(range.start)); params.set('end', String(range.end));
-    params.set('step', String(queryTiming(range.end - range.start).step));
+    params.set('step', String(step ?? queryTiming(range.end - range.start).step));
   }
   return `${config.prometheusPrefix}/${range ? 'query_range' : 'query'}?${params}`;
 }
 /** 历史窗口与回放窗口共用此入口，只是模型标签和查询时间不同。 */
-export async function fetchLoad(modelName: string, range: TimeRange, labels?: Labels, config: ApiConfig = DEFAULT_API_CONFIG, options: { freshAfter?: number } = {}): Promise<LoadData> {
+export async function fetchLoad(modelName: string, range: TimeRange, labels?: Labels, config: ApiConfig = DEFAULT_API_CONFIG, options: { freshAfter?: number; step?: number } = {}): Promise<LoadData> {
   const queries = loadQueries(modelName, labels);
   const keys = ['running', 'waiting'] as const;
   // 单条曲线失败时保留另一条的成功结果，错误信息交给页面展示。
-  const results = await Promise.allSettled(keys.map(async key => parseMatrix(await requestPrometheus(promPath(queries[key], range, config), options))));
+  const results = await Promise.allSettled(keys.map(async key => parseMatrix(await requestPrometheus(promPath(queries[key], range, config, options.step), options))));
   const data: LoadData = { running: [], waiting: [], errors: [] };
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') data[keys[i]] = r.value;

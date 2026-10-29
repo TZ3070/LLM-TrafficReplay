@@ -3,6 +3,9 @@ export type Language = 'zh' | 'en';
 const LANGUAGE_KEY = 'trafficReplay.language';
 
 const english: Record<string, string> = {
+  '实时曲线显示最近 15 分钟': 'Live charts show the latest 15 minutes',
+  '指标查询失败，请查看错误详情': 'Metric query failed. See error details.',
+  '暂无采样，等待采集或检查模型标签': 'No samples. Waiting for collection; check model labels.',
   '清空数据': 'Clear data',
   '清空中…': 'Clearing…',
   '正在清空数据': 'Clearing data',
