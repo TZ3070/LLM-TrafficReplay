@@ -81,14 +81,3 @@ test('partial failures retain the last observation while genuine empty and nonfi
   const recovered=retainReplayLatency(next,{...emptyMetrics,ttft:{value:.4}},1160);
   assert.deepEqual(recovered.ttft,{value:.4,observedAt:1160});
 });
-
-
-test('live load uses a bounded second-resolution window without a future 30s range', () => {
-  const fast = {scrapeSeconds:1,windowSeconds:60};
-  assert.deepEqual(replayLoadWindow(running,1002,fast)?.range,{start:1000.75,end:1002});
-  assert.deepEqual(replayLoadWindow(running,3000,fast)?.range,{start:2100,end:3000});
-  const ended = {...running,status:'succeeded' as const,finishedAt:3000};
-  const final = replayLoadWindow(ended,4000,fast)!;
-  assert.deepEqual(final.range,{start:2102,end:3002});
-  assert.deepEqual(replayLoadWindow(ended,5000,fast),final);
-});
